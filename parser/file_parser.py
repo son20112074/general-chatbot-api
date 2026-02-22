@@ -16,6 +16,8 @@ from .media_parser import MediaParser
 from .website_parser import WebsiteParser
 from .excel_parser import ExcelParser
 from .word_parser import WordParser
+from .pdf_parser import PDFParser
+from .image_parser import ImageParser
 from .summary_service import SummaryService
 from app.core.config import settings
 
@@ -33,6 +35,8 @@ class FileParser:
         self.website_parser = WebsiteParser(base_url)
         self.excel_parser = ExcelParser()
         self.word_parser = WordParser()
+        self.pdf_parser = PDFParser()
+        self.image_parser = ImageParser()
         self.summary_service = SummaryService(api_url=settings.LLM_API)
     
     def _upload_file(self, endpoint: str, file_path: Union[str, Path], field_name: str) -> Dict[str, Any]:
@@ -131,14 +135,16 @@ class FileParser:
         # Text file types (simple UTF-8 reading)
         if file_extension in ['.txt', '.dat', '.csv']:
             return self._parse_text_file(file_path)
-        # elif file_extension in ['.pdf']:
-        #     return self.document_parser.parse_pdf(file_path)
+        elif file_extension in ['.pdf']:
+            return self.pdf_parser.parse_pdf(file_path)
         # elif file_extension in ['.ppt', '.pptx']:
         #     result = self.document_parser.parse_powerpoint(file_path)
         elif file_extension in ['.doc', '.docx']:
             return self.word_parser.parse_word(file_path)
         elif file_extension in ['.xlsx', '.xls', '.xlsm', '.xlsb']:
             return self._parse_excel_with_langchain(file_path)
+        elif file_extension in ['.png', '.jpg', '.jpeg', '.tiff', '.tif', '.webp', '.gif', '.bmp']:
+            return self.image_parser.parse_image(file_path)
         else:
             return {
                 "success": False,
