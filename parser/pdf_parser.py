@@ -2,7 +2,7 @@
 PDF Parser Module
 
 This module contains the PDFParser class for parsing PDF documents.
-- Text-based PDFs: Uses pypdf to extract text directly
+- Text-based PDFs: Uses PyMuPDF (fitz) to extract text directly
 - Image-based PDFs: Uses Tesseract OCR to perform OCR on PDF pages
 """
 
@@ -12,9 +12,9 @@ from typing import Dict, Any, Union
 import os
 
 try:
-    from pypdf import PdfReader
+    import fitz  # PyMuPDF
 except ImportError:
-    PdfReader = None
+    fitz = None
 
 try:
     import pytesseract
@@ -89,22 +89,22 @@ class PDFParser:
         Returns:
             True if PDF is image-based, False if text-based
         """
-        if PdfReader is None:
-            logger.warning("pypdf not available, assuming image-based PDF")
+        # If PyMuPDF is not available, fall back to assuming image-based
+        if fitz is None:
+            logger.warning("PyMuPDF (fitz) not available, assuming image-based PDF")
             return True
         
         try:
             file_path = Path(file_path)
-            reader = PdfReader(str(file_path))
+            doc = fitz.open(str(file_path))
             
-            # Check first few pages for text content
             text_content = ""
-            pages_to_check = min(3, len(reader.pages))
+            pages_to_check = min(3, len(doc))
             
             for i in range(pages_to_check):
                 try:
-                    page = reader.pages[i]
-                    text = page.extract_text()
+                    page = doc.load_page(i)
+                    text = page.get_text("text")
                     if text:
                         text_content += text.strip()
                 except Exception as e:
@@ -112,21 +112,19 @@ class PDFParser:
                     continue
             
             # If we have substantial text content, it's likely text-based
-            # Threshold: if we have more than 50 characters, consider it text-based
             if len(text_content) > 50:
                 logger.info(f"PDF appears to be text-based (found {len(text_content)} characters)")
                 return False
             else:
                 logger.info("PDF appears to be image-based (little or no text found)")
                 return True
-                
         except Exception as e:
-            logger.warning(f"Error checking PDF type: {e}. Assuming image-based PDF.")
+            logger.warning(f"Error checking PDF type with PyMuPDF: {e}. Assuming image-based PDF.")
             return True
     
     def _extract_text_from_pdf(self, file_path: Union[str, Path]) -> str:
         """
-        Extract text from text-based PDF using pypdf.
+        Extract text from text-based PDF using PyMuPDF (fitz).
         
         Args:
             file_path: Path to the PDF file
@@ -134,21 +132,24 @@ class PDFParser:
         Returns:
             Extracted text content
         """
-        if PdfReader is None:
-            raise ImportError("pypdf is required for text-based PDF extraction")
+        if fitz is None:
+            raise ImportError("PyMuPDF (fitz) is required for text-based PDF extraction. Please install it: pip install pymupdf")
         
         file_path = Path(file_path)
-        reader = PdfReader(str(file_path))
-        
         text_parts = []
-        for i, page in enumerate(reader.pages):
+        
+        try:
+            doc = fitz.open(str(file_path))
             try:
-                text = page.extract_text()
-                if text:
-                    text_parts.append(text.strip())
-            except Exception as e:
-                logger.warning(f"Error extracting text from page {i+1}: {e}")
-                continue
+                for page in doc:
+                    page_text = page.get_text("text")
+                    if page_text:
+                        text_parts.append(page_text.strip())
+            finally:
+                doc.close()
+        except Exception as e:
+            logger.error(f"Error extracting text from PDF with PyMuPDF: {e}")
+            raise
         
         return '\n\n'.join(text_parts)
     
@@ -220,7 +221,7 @@ class PDFParser:
     def parse_pdf(self, file_path: Union[str, Path]) -> Dict[str, Any]:
         """
         Parse PDF documents (.pdf).
-        - Text-based PDFs: Uses pypdf to extract text
+        - Text-based PDFs: Uses PyMuPDF (fitz) to extract text
         - Image-based PDFs: Uses Tesseract OCR to perform OCR
         
         Args:
@@ -278,16 +279,16 @@ class PDFParser:
                 combined_content = self._extract_text_from_image_pdf(file_path)
                 parsed_with = "tesseract"
             else:
-                if PdfReader is None:
+                if fitz is None:
                     return {
                         "success": False,
-                        "error": "pypdf library is required for text-based PDF processing. Please install it: pip install pypdf",
+                        "error": "PyMuPDF (fitz) library is required for text-based PDF processing. Please install it: pip install pymupdf",
                         "content": "",
                         "summary": ""
                     }
                 
                 combined_content = self._extract_text_from_pdf(file_path)
-                parsed_with = "pypdf"
+                parsed_with = "pymupdf"
             
             if not combined_content or not combined_content.strip():
                 return {

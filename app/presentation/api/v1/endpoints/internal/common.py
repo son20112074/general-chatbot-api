@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.core.query import CommonQuery, QueryInput, CursorPaginationResult, InsertInput, InsertResult, UpsertInput, UpsertResult, DeleteInput, DeleteResult, TreeQueryInput, TreeQueryResult
 from app.presentation.api.dependencies import get_common_query, get_current_user
 from app.presentation.api.v1.schemas.auth import TokenData
-from app.core.database import Base
 from app.utils.table_lookup import get_table_with_schema
 
 router = APIRouter()
@@ -59,13 +58,8 @@ async def insert_data(
         - data: Dictionary of field-value pairs to insert
     """
     try:
-        # Get table from SQLAlchemy metadata
-        table = Base.metadata.tables.get(insert_input.table_name)
-        if table is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown table: {insert_input.table_name}"
-            )
+        # Get table from SQLAlchemy metadata with schema support
+        table = get_table_with_schema(insert_input.table_name)
         
         # Execute insert
         result = await common_query.insert(table, insert_input)

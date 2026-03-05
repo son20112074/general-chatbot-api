@@ -59,9 +59,10 @@ class FileService:
             fields: Optional list of fields to include in response
             is_save: If True, save to database. If False, only save to disk.
         """
-        # Calculate file hash
+        # Calculate file hash and combine with user_id for per-user uniqueness
         file_hash = await self.calculate_file_hash(file)
-        
+        combined_hash = f"{file_hash}_{user_id}"
+
         # Get file metadata
         contents = await file.read()
         file_size = len(contents)
@@ -69,10 +70,10 @@ class FileService:
         file_root, file_extension = os.path.splitext(file_name)
         mime_type = self.get_mime_type(file_name)
 
-        # Create file path in year/month directory
+        # Create file path in year/month directory using combined hash as filename
         file_dir = self._get_file_directory()
-        file_path = str(file_dir / f"{file_hash}{file_extension}")
-        
+        file_path = str(file_dir / f"{combined_hash}{file_extension}")
+
         # Save file if it doesn't exist
         if not os.path.exists(file_path):
             with open(file_path, "wb") as f:
@@ -83,7 +84,7 @@ class FileService:
             file_dict = {
                 "name": file_name,
                 "size": file_size,
-                "hash": file_hash,
+                "hash": combined_hash,
                 "path": file_path,
                 "extension": file_extension,
                 "mime_type": mime_type,
@@ -92,9 +93,9 @@ class FileService:
             }
             return self._filter_fields(file_dict, fields)
 
-        # Check if file already exists in database
+        # Check if file already exists in database (combined_hash is unique per user)
         existing_file = await self.session.execute(
-            select(File).where(File.hash == file_hash)
+            select(File).where(File.hash == combined_hash)
         )
         existing_file = existing_file.scalar_one_or_none()
 
@@ -105,7 +106,7 @@ class FileService:
             existing_file.updated_at = datetime.utcnow()
             await self.session.commit()
             await self.session.refresh(existing_file)
-            
+
             file_dict = existing_file.to_dict()
             file_dict["url"] = f"/api/v1/static/uploads/{os.path.relpath(file_path, 'static/uploads')}"
             return self._filter_fields(file_dict, fields)
@@ -114,7 +115,7 @@ class FileService:
         new_file = File(
             name=file_name,
             size=file_size,
-            hash=file_hash,
+            hash=combined_hash,
             path=file_path,
             extension=file_extension,
             mime_type=mime_type,
