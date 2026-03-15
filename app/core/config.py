@@ -26,7 +26,10 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30  # 30 days (increased from 7 days)
 
     LLM_API: str = "https://api.openai.com/v1"
-    
+
+    # PaddleOCR-VL: optional vLLM server URL (e.g. ngrok). If set, image parser uses this instead of local model.
+    PADDLEOCR_VL_SERVER_URL: Optional[str] = None
+
     # Content processing limits
     CONTENT_LIMIT: int = 20000  # Maximum content length for API processing
 

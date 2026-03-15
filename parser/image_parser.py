@@ -2,151 +2,143 @@
 Image Parser Module
 
 This module contains the ImageParser class for parsing image files.
-- Uses Tesseract OCR to perform OCR on images for text extraction
-- Tesseract supports Vietnamese language recognition
+- Uses PaddleOCR-VL via vLLM server for VLM; layout model (PP-DocLayoutV3) still loads locally once.
+- Optional env PADDLEOCR_VL_SERVER_URL; default: https://6780-118-70-233-92.ngrok-free.app/v1
+- Install: pip install "paddleocr[doc-parser]"
 """
 
 import logging
-from pathlib import Path
-from typing import Dict, Any, Union
 import os
+import warnings
+from pathlib import Path
+from typing import Dict, Any, Union, Optional, List
+
+DEFAULT_VL_SERVER_URL = "https://6780-118-70-233-92.ngrok-free.app"
+
+
+def _get_vl_server_url() -> str:
+    raw = os.environ.get("PADDLEOCR_VL_SERVER_URL", "").strip()
+    if not raw:
+        try:
+            from app.core.config import settings
+            raw = (getattr(settings, "PADDLEOCR_VL_SERVER_URL", None) or "").strip()
+        except Exception:
+            pass
+    return raw or DEFAULT_VL_SERVER_URL
+
+
+_raw = _get_vl_server_url()
+_vl_server_url = _raw.rstrip("/")
+if not _vl_server_url.endswith("/v1"):
+    _vl_server_url = f"{_vl_server_url}/v1"
 
 try:
-    import pytesseract
-    TesseractOCR = True
-except ImportError as e:
-    TesseractOCR = False
-    import logging
-    logger_temp = logging.getLogger(__name__)
-    logger_temp.warning(f"pytesseract import failed: {e}. Please install it: pip install pytesseract")
-
-try:
-    from PIL import Image
+    from paddleocr import PaddleOCRVL
+    PADDLEOCR_AVAILABLE = True
 except ImportError:
-    Image = None
+    PaddleOCRVL = None  # type: ignore
+    PADDLEOCR_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
+# Pipeline singleton: loaded once and reused
+_pipeline: Optional[Any] = None
+_pipeline_load_failed: bool = False
+
+
+def _get_pipeline():
+    """Connect to PaddleOCR-VL vLLM server (singleton)."""
+    global _pipeline, _pipeline_load_failed
+
+    if _pipeline_load_failed:
+        raise RuntimeError(
+            "PaddleOCR-VL (vLLM server) previously failed. Check PADDLEOCR_VL_SERVER_URL and server."
+        )
+
+    if _pipeline is not None:
+        return _pipeline
+
+    if not PADDLEOCR_AVAILABLE:
+        raise ImportError(
+            "paddleocr is required. Install: pip install -U \"paddleocr[doc-parser]\"."
+        )
+
+    try:
+        logger.info("Connecting to PaddleOCR-VL vLLM server: %s ...", _vl_server_url)
+        _pipeline = PaddleOCRVL(
+            vl_rec_backend="vllm-server",
+            vl_rec_server_url=_vl_server_url,
+        )
+        logger.info("PaddleOCR-VL vLLM server connected.")
+        return _pipeline
+    except Exception as e:
+        _pipeline_load_failed = True
+        _pipeline = None
+        logger.error("Failed to connect to PaddleOCR-VL vLLM server: %s", e)
+        raise
+
+
+def _collect_text_from_results(output: List[Any]) -> str:
+    """Collect markdown text from predict() results (from res.markdown or res.json)."""
+    parts: List[str] = []
+    for res in output:
+        md = getattr(res, "markdown", None)
+        if md and isinstance(md, dict):
+            texts = md.get("markdown_texts")
+            if isinstance(texts, list):
+                parts.extend(str(t) for t in texts if t)
+            elif isinstance(texts, str):
+                parts.append(texts)
+        if not parts:
+            j = getattr(res, "json", None)
+            if j and isinstance(j, dict):
+                for key in ("markdown_texts", "text", "content", "result"):
+                    if key in j and j[key]:
+                        v = j[key]
+                        if isinstance(v, list):
+                            parts.extend(str(x) for x in v if x)
+                        elif isinstance(v, str):
+                            parts.append(v)
+                        break
+    return "\n".join(parts).strip() if parts else ""
+
 
 class ImageParser:
-    """Parser for image files using OCR to extract text."""
-    
-    def __init__(self):
-        """Initialize the image parser."""
-        self._ocr_initialized = False
-    
-    def _init_ocr(self):
-        """Initialize Tesseract OCR for image processing (lazy initialization)."""
-        if self._ocr_initialized:
-            return
-        
-        if TesseractOCR:
-            try:
-                # Try to find Tesseract executable if not in PATH
-                try:
-                    pytesseract.get_tesseract_version()
-                    logger.info("Tesseract OCR initialized successfully for image parsing")
-                except Exception:
-                    # Try common Windows installation paths
-                    common_paths = [
-                        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-                        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
-                        r'C:\Users\{}\AppData\Local\Tesseract-OCR\tesseract.exe'.format(os.getenv('USERNAME', '')),
-                    ]
-                    for path in common_paths:
-                        if os.path.exists(path):
-                            pytesseract.pytesseract.tesseract_cmd = path
-                            pytesseract.get_tesseract_version()  # Verify it works
-                            logger.info(f"Found and initialized Tesseract at: {path}")
-                            break
-                    else:
-                        raise Exception("Tesseract not found in PATH or common installation locations")
-                self._ocr_initialized = True
-            except Exception as e:
-                logger.warning(
-                    f"Failed to initialize Tesseract OCR: {e}. "
-                    "Please ensure Tesseract OCR is installed on your system. "
-                    "For Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki "
-                    "For Linux: sudo apt-get install tesseract-ocr tesseract-ocr-vie"
-                )
-                self._ocr_initialized = True  # Mark as initialized even if failed to avoid retrying
-        else:
-            logger.warning("pytesseract not installed. OCR functionality will be limited.")
-            self._ocr_initialized = True  # Mark as initialized even if failed to avoid retrying
-    
+    """Parser for image files using PaddleOCR-VL (official paddleocr package)."""
+
+    SUPPORTED_EXTENSIONS = [
+        '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.webp', '.gif', '.bmp'
+    ]
+
     def _extract_text_from_image(self, file_path: Union[str, Path]) -> str:
         """
-        Extract text from image using Tesseract OCR.
-        
-        Args:
-            file_path: Path to the image file
-            
-        Returns:
-            Extracted text content from OCR
+        Extract text from an image using PaddleOCR-VL pipeline.
+        Uses predict(path_or_url) then iterates output and res.print(); text is collected from res.markdown/res.json.
         """
-        if Image is None:
-            raise ImportError("PIL/Pillow is required for image processing")
-        
-        if not TesseractOCR:
-            raise ImportError("pytesseract is required for OCR functionality. Install it: pip install pytesseract")
-        
-        file_path = Path(file_path)
-        
-        try:
-            # Try to set Tesseract path if not in PATH (common on Windows)
-            # You can set this manually: pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-            try:
-                pytesseract.get_tesseract_version()
-            except Exception:
-                # Try common Windows installation paths
-                common_paths = [
-                    r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-                    r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
-                    r'C:\Users\{}\AppData\Local\Tesseract-OCR\tesseract.exe'.format(os.getenv('USERNAME', '')),
-                ]
-                for path in common_paths:
-                    if os.path.exists(path):
-                        pytesseract.pytesseract.tesseract_cmd = path
-                        logger.info(f"Found Tesseract at: {path}")
-                        break
-                else:
-                    raise Exception(
-                        "Tesseract OCR is not installed or not in PATH. "
-                        "Please install Tesseract OCR from https://github.com/UB-Mannheim/tesseract/wiki "
-                        "or set pytesseract.pytesseract.tesseract_cmd to the Tesseract executable path."
-                    )
-            
-            # Load image using PIL
-            image = Image.open(str(file_path))
-            
-            # Convert to RGB if necessary (Tesseract works best with RGB)
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-            
-            # Perform OCR using Tesseract with Vietnamese language support
-            # lang='vie' for Vietnamese, 'eng' for English, 'vie+eng' for both
-            result = pytesseract.image_to_string(image, lang='vie+eng')
-            
-            return result if result else ""
-                    
-        except Exception as e:
-            logger.error(f"Error performing OCR on image: {e}")
-            raise
-    
+        pipeline = _get_pipeline()
+        # predict() accepts local path or URL (e.g. "https://...")
+        input_path = str(file_path)
+        output = pipeline.predict(input_path)
+
+        for res in output:
+            res.print()
+
+        return _collect_text_from_results(output)
+
     def parse_image(self, file_path: Union[str, Path]) -> Dict[str, Any]:
         """
         Parse image files (.png, .jpg, .jpeg, .tiff, .webp, .gif, .bmp).
-        Uses Tesseract OCR to perform OCR and extract text from images.
-        
+        Uses PaddleOCR-VL to perform OCR and extract text from images.
+
         Args:
             file_path: Path to the image file
-            
+
         Returns:
             Dictionary containing the parsed image information
         """
         try:
             file_path = Path(file_path)
-            
+
             if not file_path.exists():
                 return {
                     "success": False,
@@ -154,42 +146,29 @@ class ImageParser:
                     "content": "",
                     "summary": ""
                 }
-            
-            # Check file extension
+
             file_extension = file_path.suffix.lower()
-            supported_extensions = ['.png', '.jpg', '.jpeg', '.tiff', '.tif', '.webp', '.gif', '.bmp']
-            if file_extension not in supported_extensions:
+            if file_extension not in self.SUPPORTED_EXTENSIONS:
                 return {
                     "success": False,
-                    "error": f"Unsupported file type: {file_extension}. Supported formats: {', '.join(supported_extensions)}",
+                    "error": (
+                        f"Unsupported file type: {file_extension}. "
+                        f"Supported formats: {', '.join(self.SUPPORTED_EXTENSIONS)}"
+                    ),
                     "content": "",
                     "summary": ""
                 }
-            
-            # Check if required libraries are available
-            if Image is None:
+
+            if not PADDLEOCR_AVAILABLE:
                 return {
                     "success": False,
-                    "error": "PIL/Pillow library is required for image processing. Please install it: pip install Pillow",
+                    "error": "paddleocr is required. Install: pip install -U \"paddleocr[doc-parser]\".",
                     "content": "",
                     "summary": ""
                 }
-            
-            # Lazy initialization of OCR - only initialize when needed
-            if not self._ocr_initialized:
-                self._init_ocr()
-            
-            if not TesseractOCR:
-                return {
-                    "success": False,
-                    "error": "Tesseract OCR is required for image OCR processing. Please install: pip install pytesseract and install Tesseract OCR engine from https://github.com/tesseract-ocr/tesseract",
-                    "content": "",
-                    "summary": ""
-                }
-            
-            # Extract text using OCR
+
             combined_content = self._extract_text_from_image(file_path)
-            
+
             if not combined_content or not combined_content.strip():
                 return {
                     "success": False,
@@ -197,25 +176,28 @@ class ImageParser:
                     "content": "",
                     "summary": ""
                 }
-            
+
             result = {
                 "success": True,
                 "content": combined_content.strip(),
-                "summary": '',  # This will be replaced by AI summary
+                "summary": "",
                 "file_type": file_extension,
                 "file_size": len(combined_content),
-                "parsed_with": "tesseract"
+                "parsed_with": "paddleocr-vl"
             }
-            
-            logger.info(f"Successfully parsed image: {file_path} (parser: tesseract, text length: {len(combined_content)})")
+
+            logger.info(
+                "Successfully parsed image: %s (parser: paddleocr-vl, text length: %d)",
+                file_path,
+                len(combined_content),
+            )
             return result
-            
+
         except Exception as e:
-            logger.error(f"Error parsing image {file_path}: {e}")
+            logger.error("Error parsing image %s: %s", file_path, e)
             return {
                 "success": False,
                 "error": str(e),
                 "content": "",
                 "summary": ""
             }
-
