@@ -9,6 +9,7 @@ from .project import *
 from .session import *
 from .chat_message import *
 from .chat_history import *
+from .db_connection import *
 
 __all__ = [
     "User",
@@ -22,4 +23,5 @@ __all__ = [
     "Session",
     "ChatMessage",
     "ChatHistory",
+    "DBConnection",
 ]

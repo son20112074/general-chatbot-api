@@ -11,6 +11,7 @@ from app.presentation.api.v1.schemas.auth import TokenData
 class AuthService:
     def __init__(self, db: AsyncSession):
         self.db = db
+        
 
     async def authenticate_user(self, account_name: str, password: str) -> Optional[User]:
         query = select(User).where(User.account_name == account_name)
@@ -71,6 +72,14 @@ class AuthService:
             return None
 
     async def login(self, account_name: str, password: str) -> Optional[dict]:
+        # access_token, new_refresh_token = self.create_tokens(
+        #         data={"sub": "3", "account_name": "admin2", "role_id": 1},
+        #         access_expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+        #         refresh_expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+        #     )
+            
+        # print(access_token)
+
         user = await self.authenticate_user(account_name, password)
         if not user:
             return None
@@ -102,6 +111,7 @@ class AuthService:
             "full_name": user.full_name,
             "role_id": user.role_id
         }
+        
 
     async def refresh_token(self, refresh_token: str) -> Optional[dict]:
         token_data = await self.verify_token(refresh_token)
@@ -135,3 +145,10 @@ class AuthService:
             "full_name": user.full_name,
             "role_id": user.role_id
         } 
+    
+    
+    
+    
+    
+
+    
