@@ -1,21 +1,33 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, and_, or_, text as sa_text
+from app.core.config import settings
 from app.core.database import Base, get_db
 from app.core.file_service import FileService
 from app.core.query import CursorPaginationResult, QueryInput
 from app.domain.services.file_service import FileQueryService
+from app.domain.models.file import File as FileModel
+from app.domain.models.user import User
 from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.auth import TokenData
+from app.presentation.api.v1.schemas.file import (
+    ExtractFileContentRequest, ExtractFileContentResponse,
+    FileDashboardResponse, PeriodStatsRequest, PeriodStatsResponse,
+    CountryTechStatsRequest, CountryTechStatsResponse,
+    FileUpdateSchema, FileMoveSchema, FileListAllSchema,
+)
 from app.utils.table_lookup import get_table_with_schema
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
-from datetime import datetime, timedelta
+from app.utils.helpers import check_file_permission, compute_and_set_node_path, build_file_item
+from typing import List, Optional
+from datetime import datetime
 from dateutil import parser as date_parser
 import os
 import docx
 import openpyxl
 import csv
 import codecs
+
+ADMIN_ROLE_ID = settings.ADMIN_ROLE_ID
 
 router = APIRouter()
 
@@ -42,68 +54,9 @@ def parse_datetime_safe(datetime_str: str) -> datetime:
     except Exception as e:
         raise ValueError(f"Invalid datetime format: {str(e)}")
 
-# Request/Response schemas for extract-file-content endpoint
-class ExtractFileContentRequest(BaseModel):
-    file_path: str = Field(..., description="Đường dẫn đến file cần trích xuất nội dung")
 
-class ExtractFileContentResponse(BaseModel):
-    file_path: str = Field(..., description="Đường dẫn file")
-    file_name: str = Field(..., description="Tên file")
-    file_size: int = Field(..., description="Kích thước file (bytes)")
-    file_extension: str = Field(..., description="Phần mở rộng file")
-    modified_time: str = Field(..., description="Thời gian chỉnh sửa cuối")
-    content: str = Field(..., description="Nội dung được trích xuất")
-    content_length: int = Field(..., description="Độ dài nội dung")
-    success: bool = Field(default=True, description="Trạng thái thành công")
-    message: str = Field(default="Trích xuất nội dung file thành công", description="Thông báo")
 
-# Dashboard response schema
-class FileDashboardResponse(BaseModel):
-    total_files: int = Field(..., description="Tổng số lượng file")
-    total_size: int = Field(..., description="Tổng dung lượng file (bytes)")
-    total_size_mb: float = Field(..., description="Tổng dung lượng file (MB)")
-    processed_files: int = Field(..., description="Số lượng file đã xử lý")
-    unprocessed_files: int = Field(..., description="Số lượng file chưa xử lý")
-    processing_rate: float = Field(..., description="Tỷ lệ xử lý (%)")
-    avg_processing_duration: Optional[float] = Field(None, description="Thời gian xử lý trung bình (giây)")
-    files_by_extension: dict = Field(..., description="Số lượng file theo phần mở rộng")
-    files_by_status: dict = Field(..., description="Số lượng file theo trạng thái xử lý")
-
-# Period statistics request schema
-class PeriodStatsRequest(BaseModel):
-    period: str = Field(..., description="Kỳ thống kê: 'day', 'month', 'quarter', 'year'")
-    from_time: Optional[str] = Field(None, description="Thời gian bắt đầu (YYYY-MM-DD hoặc YYYY-MM-DD HH:MM:SS)")
-    to_time: Optional[str] = Field(None, description="Thời gian kết thúc (YYYY-MM-DD hoặc YYYY-MM-DD HH:MM:SS)")
-
-# Period statistics response schema
-class PeriodStatsResponse(BaseModel):
-    period: str = Field(..., description="Kỳ thống kê")
-    from_time: Optional[str] = Field(None, description="Thời gian bắt đầu")
-    to_time: Optional[str] = Field(None, description="Thời gian kết thúc")
-    total_files: int = Field(..., description="Tổng số lượng file")
-    total_size: int = Field(..., description="Tổng dung lượng file (bytes)")
-    total_size_mb: float = Field(..., description="Tổng dung lượng file (MB)")
-    statistics: List[Dict[str, Any]] = Field(..., description="Thống kê chi tiết theo kỳ")
-    files_by_extension: dict = Field(..., description="Số lượng file theo phần mở rộng")
-    files_by_status: dict = Field(..., description="Số lượng file theo trạng thái xử lý")
-
-# Country and Technology statistics request schema
-class CountryTechStatsRequest(BaseModel):
-    from_time: Optional[str] = Field(None, description="Thời gian bắt đầu (YYYY-MM-DD hoặc YYYY-MM-DD HH:MM:SS)")
-    to_time: Optional[str] = Field(None, description="Thời gian kết thúc (YYYY-MM-DD hoặc YYYY-MM-DD HH:MM:SS)")
-    sort_by: str = Field(default="count", description="Sắp xếp theo: 'count' hoặc 'name'")
-    sort_order: str = Field(default="desc", description="Thứ tự sắp xếp: 'asc' hoặc 'desc'")
-    limit: Optional[int] = Field(None, description="Giới hạn số lượng kết quả trả về")
-
-# Country and Technology statistics response schema
-class CountryTechStatsResponse(BaseModel):
-    from_time: Optional[str] = Field(None, description="Thời gian bắt đầu")
-    to_time: Optional[str] = Field(None, description="Thời gian kết thúc")
-    total_files: int = Field(..., description="Tổng số lượng file trong khoảng thời gian")
-    listed_nations: List[Dict[str, Any]] = Field(..., description="Danh sách quốc gia và số lượng tài liệu")
-    listed_technologies: List[Dict[str, Any]] = Field(..., description="Danh sách công nghệ và số lượng tài liệu")
-    total_nations: int = Field(..., description="Tổng số quốc gia unique")
-    total_technologies: int = Field(..., description="Tổng số công nghệ unique")
+# ── Endpoints ────────────────────────────────────────────────
 
 @router.post("/upload")
 async def upload_file(
@@ -888,4 +841,186 @@ async def get_country_technology_statistics(
             detail=f"Lỗi khi lấy thống kê quốc gia và công nghệ: {str(e)}"
         )
 
+
+
+@router.get("/detail/{file_id}",
+            summary="Get file detail",
+            description="Get full file detail by ID including all metadata, content, classification, owner info, and node_path.")
+async def get_file_detail(
+    file_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    result = await session.execute(
+        select(FileModel, User.id.label("u_id"), User.full_name.label("u_name"))
+        .outerjoin(User, FileModel.created_by == User.id)
+        .where(and_(FileModel.id == file_id, or_(FileModel.is_deleted == False, FileModel.is_deleted == None)))
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="File not found")
+    data = row[0].to_dict()
+    data["owner"] = {"id": row.u_id, "full_name": row.u_name} if row.u_id else None
+    return data
+
+
+@router.put("/update/{file_id}",
+            summary="Update file name",
+            description="Only the creator or admin (role_id=1) can update.")
+async def update_file(
+    file_id: int,
+    data: FileUpdateSchema,
+    current_user: TokenData = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    result = await session.execute(
+        select(FileModel).where(and_(FileModel.id == file_id, or_(FileModel.is_deleted == False, FileModel.is_deleted == None)))
+    )
+    file_obj = result.scalar_one_or_none()
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        check_file_permission(file_obj, current_user.user_id, current_user.role_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if data.name is not None:
+        file_obj.name = data.name
+    await session.commit()
+    await session.refresh(file_obj)
+    return file_obj.to_dict()
+
+
+@router.delete("/delete/{file_id}", status_code=204,
+               summary="Soft delete a file",
+               description="Only the creator or admin (role_id=1) can delete.")
+async def delete_file(
+    file_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    result = await session.execute(
+        select(FileModel).where(and_(FileModel.id == file_id, or_(FileModel.is_deleted == False, FileModel.is_deleted == None)))
+    )
+    file_obj = result.scalar_one_or_none()
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        check_file_permission(file_obj, current_user.user_id, current_user.role_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    file_obj.is_deleted = True
+    await session.commit()
+
+
+@router.put("/move/{file_id}",
+            summary="Move file to another folder",
+            description="Re-computes node_path. Only the creator or admin can move.")
+async def move_file(
+    file_id: int,
+    data: FileMoveSchema,
+    current_user: TokenData = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    result = await session.execute(
+        select(FileModel).where(and_(FileModel.id == file_id, or_(FileModel.is_deleted == False, FileModel.is_deleted == None)))
+    )
+    file_obj = result.scalar_one_or_none()
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        check_file_permission(file_obj, current_user.user_id, current_user.role_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    file_obj.folder_id = data.new_folder_id
+    await compute_and_set_node_path(session, file_obj)
+    await session.commit()
+    await session.refresh(file_obj)
+    return file_obj.to_dict()
+
+
+@router.post("/list-all",
+             summary="Get all accessible files (flat list)",
+             description="""Returns files the current user is allowed to see, sorted by created_at DESC.
+
+**Visibility rules:**
+- Own files (created_by = current user)
+- Files from subordinate roles (child roles in hierarchy)
+- Admin (role_id=1) sees all files
+- Does NOT show files from other users at the same role level
+- Private files only visible to their creator (admin sees all)
+
+**Filters:** type, folder_id, owner_name, search_text. All optional.""")
+async def list_all_files(
+    query_params: FileListAllSchema,
+    current_user: TokenData = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    try:
+        user_id = current_user.user_id
+        user_role_id = current_user.role_id
+
+        # Visibility: self + subordinate users
+        if user_role_id == ADMIN_ROLE_ID:
+            allowed_user_filter = []
+        else:
+            child_roles_result = await session.execute(sa_text("""
+                SELECT id FROM roles
+                WHERE parent_path ILIKE :exact_path
+                OR parent_path ILIKE :anywhere_path
+            """), {
+                "exact_path": f",{user_role_id},",
+                "anywhere_path": f"%,{user_role_id},%"
+            })
+            child_role_ids = [row[0] for row in child_roles_result.fetchall()]
+            if child_role_ids:
+                child_users_result = await session.execute(
+                    select(User.id).where(User.role_id.in_(child_role_ids))
+                )
+                child_user_ids = [row[0] for row in child_users_result.fetchall()]
+            else:
+                child_user_ids = []
+            allowed_user_filter = [FileModel.created_by.in_([user_id] + child_user_ids)]
+
+        # Private: only creator sees (admin sees all)
+        if user_role_id == ADMIN_ROLE_ID:
+            private_filter = []
+        else:
+            private_filter = [or_(FileModel.type != 'private', FileModel.created_by == user_id)]
+
+        base_cond = and_(
+            or_(FileModel.is_deleted == False, FileModel.is_deleted == None),
+            *private_filter,
+            *allowed_user_filter,
+        )
+        query = (
+            select(FileModel, User.id.label("u_id"), User.full_name.label("u_name"))
+            .outerjoin(User, FileModel.created_by == User.id)
+            .where(base_cond)
+        )
+        count_query = select(func.count()).select_from(FileModel).where(base_cond)
+
+        # Optional filters
+        if query_params.folder_id is not None:
+            query = query.where(FileModel.folder_id == query_params.folder_id)
+            count_query = count_query.where(FileModel.folder_id == query_params.folder_id)
+        if query_params.type:
+            query = query.where(FileModel.type == query_params.type)
+            count_query = count_query.where(FileModel.type == query_params.type)
+        if query_params.owner_name:
+            cond = User.full_name.ilike(f"%{query_params.owner_name}%")
+            query = query.where(cond)
+            count_query = count_query.outerjoin(User, FileModel.created_by == User.id).where(cond)
+        if query_params.search_text:
+            cond = FileModel.name.ilike(f"%{query_params.search_text}%")
+            query = query.where(cond)
+            count_query = count_query.where(cond)
+
+        total = (await session.execute(count_query)).scalar_one()
+        offset = (query_params.page - 1) * query_params.page_size
+        query = query.order_by(FileModel.created_at.desc()).offset(offset).limit(query_params.page_size)
+
+        items = [build_file_item(row[0], row.u_id, row.u_name) for row in (await session.execute(query)).all()]
+        return {"data": items, "total": total}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
 

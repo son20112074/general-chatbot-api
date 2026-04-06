@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # PaddleOCR-VL: optional vLLM server URL (e.g. ngrok). If set, image parser uses this instead of local model.
     PADDLEOCR_VL_SERVER_URL: Optional[str] = None
 
+    # Admin role
+    ADMIN_ROLE_ID: int = 1
+
     # Content processing limits
     CONTENT_LIMIT: int = 20000  # Maximum content length for API processing
 

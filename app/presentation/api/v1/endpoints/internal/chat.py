@@ -13,8 +13,9 @@ from app.domain.services.file_service import FileQueryService
 
 router = APIRouter(prefix="", tags=["Chat"])
 
-# role_id = 1: admin - có thể xem tất cả
-# role_id != 1: lọc theo user_id trong Session, chỉ xem session của mình và user con
+from app.core.config import settings
+# admin: có thể xem tất cả
+# non-admin: lọc theo user_id trong Session, chỉ xem session của mình và user con
 
 @router.get("/first-messages", response_model=List[FirstMessageResponse])
 async def get_first_messages(
@@ -51,7 +52,7 @@ async def get_first_messages(
     )
 
     # Phân quyền: nếu không phải admin thì chỉ lấy session có user_id thuộc user hiện tại + user con
-    if current_user.role_id != 1:
+    if current_user.role_id != settings.ADMIN_ROLE_ID:
         file_query_service = FileQueryService(db)
         user_ids = await file_query_service.get_user_hierarchy_ids(current_user.user_id)
         allowed_user_ids_str = [str(uid) for uid in user_ids]

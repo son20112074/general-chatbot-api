@@ -82,24 +82,21 @@ class UserService:
         return True
 
     async def get_child_roles(self, role_id: int) -> List[int]:
-        """Get all child roles for a given role ID based on parent_path"""
-        # Query to find all roles that have the given role_id in their parent_path
+        """Get all child roles for a given role ID based on parent_path."""
         role_query = text("""
-            SELECT id FROM roles 
-            WHERE parent_path LIKE :exact_path 
-            OR parent_path LIKE :anywhere_path 
+            SELECT id FROM roles
+            WHERE parent_path ILIKE :exact_path
+            OR parent_path ILIKE :anywhere_path
             ORDER BY parent_path ASC
         """)
-        
+
         role_result = await self.db.execute(
             role_query,
             {
-                "exact_path": f",{role_id},",  # Exact match for direct children
-                "anywhere_path": f"%,{role_id},%"  # Match anywhere in path for all descendants
+                "exact_path": f",{role_id},",
+                "anywhere_path": f"%,{role_id},%"
             }
         )
-        
-        # Get all role IDs (excluding the current role)
         return [row[0] for row in role_result.fetchall()]
 
     async def query_users(self, query_params: GetUsersQuery, current_role_id: int) -> Dict:
@@ -130,7 +127,7 @@ class UserService:
                 query = query.where(or_(*search_conditions))
                 count_query = count_query.where(or_(*search_conditions))
         # Add custom conditions
-        for key, value in query_params.condition.items():
+        for key, value in (query_params.condition or {}).items():
             if hasattr(User, key):
                 field = getattr(User, key)
                 if isinstance(value, bool):

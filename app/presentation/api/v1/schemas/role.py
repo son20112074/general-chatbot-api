@@ -9,13 +9,13 @@ class RoleBase(BaseModel):
 
 class RoleCreate(BaseModel):
     name: str = Field(..., description="Name of the role")
-    description: Optional[str] = Field(..., description="Description of the role")
-    parent_path: str = Field(..., description="Parent path in the role hierarchy")
+    description: Optional[str] = Field(default=None, examples=[None], description="Description of the role")
+    parent_path: Optional[str] = Field(default=None, examples=[None], description="Parent path, comma-separated, e.g. ',1,2,', e.g. '1.2'")
 
 class RoleUpdate(BaseModel):
-    name: Optional[str] = Field(None, description="Name of the role")
-    description: Optional[str] = Field(None, description="Description of the role")
-    parent_path: Optional[str] = Field(None, description="Parent path in the role hierarchy")
+    name: Optional[str] = Field(default=None, examples=[None], description="Name of the role")
+    description: Optional[str] = Field(default=None, examples=[None], description="Description of the role")
+    parent_path: Optional[str] = Field(default=None, examples=[None], description="Parent path, comma-separated, e.g. ',1,2,'")
 
 class RoleResponse(BaseModel):
     id: int
@@ -33,14 +33,14 @@ class RoleResponse(BaseModel):
         }
 
 class RoleQuery(BaseModel):
-    ids: Optional[List[int]] = None
-    fields: Optional[List[str]] = None
-    condition: Optional[Dict[str, Any]] = None
-    search_text: Optional[str] = None
-    search_fields: Optional[List[str]] = None
-    page: int = 1
-    page_size: int = 10
+    ids: Optional[List[int]] = Field(default=None, examples=[None])
+    fields: Optional[List[str]] = Field(default=None, examples=[None])
+    condition: Optional[Dict[str, Any]] = Field(default=None, examples=[None])
+    search_text: Optional[str] = Field(default=None, examples=[None])
+    search_fields: Optional[List[str]] = Field(default=None, examples=[None])
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=10, ge=1, le=100)
 
 class DeleteRoleSchema(BaseModel):
-    parent_path: str = Field(..., description="Parent path of the role to delete")
-    id: int = Field(..., description="ID of the role to delete") 
+    parent_path: Optional[str] = Field(default=None, examples=[None], description="Parent path of the role to delete")
+    id: Optional[int] = Field(default=None, examples=[None], description="ID of the role to delete")

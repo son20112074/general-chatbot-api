@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '2.7'
-down_revision = '2.6_add_file_classification_columns'
+down_revision = '2.6'
 branch_labels = None
 depends_on = None
 

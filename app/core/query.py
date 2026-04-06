@@ -8,6 +8,7 @@ from datetime import datetime
 from app.domain.models import Task, User, Role, File, TaskWork, PersonalTaskStatus
 from app.utils.tree_builder import make_tree
 from sqlalchemy.orm import selectinload
+from app.core.config import settings
 
 class QueryInput(BaseModel):
     table_name: str = Field(None)
@@ -592,7 +593,7 @@ class CommonQuery:
                     )
 
             # Add user access control
-            if user.role_id != 1:  # Assuming 1 is admin role
+            if user.role_id != settings.ADMIN_ROLE_ID:
                 valid_users = await self.get_valid_users(user.role_id)
                 valid_users.append(user.user_id)
                 query = query.where(model_class.created_by.in_(valid_users))
