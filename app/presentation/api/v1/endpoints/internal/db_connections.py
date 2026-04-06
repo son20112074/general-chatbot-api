@@ -188,11 +188,9 @@ async def ask_db_connection(
                 detail=f"Access denied to connection {conn_id}"
             )
     
-    # Import OpenAI client
-    from app.infrastructure.services.openai_service import OpenAIClient
     from app.infrastructure.services.oss_service import OpenRouterClient
 
-    # Create OpenAI client
+    # Create client
     try:
         # llm_client = OpenAIClient(api_key=settings.OPENAI_API_KEY)
         llm_client = OpenRouterClient()
