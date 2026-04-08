@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     # Admin role
     ADMIN_ROLE_ID: int = 1
 
+    # Storage (MinIO)
+    STORAGE_PUBLIC_URL: str = "http://localhost:9002"
+    STORAGE_BUCKET_NAME: str = "media-bucket"
+
     # Content processing limits
     CONTENT_LIMIT: int = 20000  # Maximum content length for API processing
 

@@ -108,6 +108,7 @@ def build_file_item(f, u_id, u_name) -> dict:
     return {
         "id": f.id, "name": f.name, "size": f.size,
         "hash": f.hash, "path": f.path,
+        "url": f.url,
         "extension": f.extension, "mime_type": f.mime_type,
         "node_path": f.node_path,
         "owner": {"id": u_id, "full_name": u_name} if u_id else None,

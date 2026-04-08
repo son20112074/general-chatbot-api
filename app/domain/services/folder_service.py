@@ -548,7 +548,7 @@ class FolderService:
     def _file_to_node(self, f: File, owner_id: int, owner_name: str) -> Dict[str, Any]:
         return {
             "node_type": "file", "id": f.id, "name": f.name,
-            "size": f.size, "hash": f.hash, "path": f.path,
+            "size": f.size, "hash": f.hash, "path": f.path, "url": f.url,
             "extension": f.extension, "mime_type": f.mime_type,
             "node_path": f.node_path,
             "owner": {"id": owner_id, "full_name": owner_name} if owner_id else None,

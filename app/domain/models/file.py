@@ -48,6 +48,13 @@ class File(Base):
     def __repr__(self):
         return f"<File {self.name} ({self.id})>"
 
+    @property
+    def url(self) -> str:
+        """Full public URL to access the file via storage."""
+        if self.path:
+            return f"{settings.STORAGE_PUBLIC_URL}/{settings.STORAGE_BUCKET_NAME}/{self.path}"
+        return None
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -55,6 +62,7 @@ class File(Base):
             "size": self.size,
             "hash": self.hash,
             "path": self.path,
+            "url": self.url,
             "extension": self.extension,
             "mime_type": self.mime_type,
             "created_by": self.created_by,
