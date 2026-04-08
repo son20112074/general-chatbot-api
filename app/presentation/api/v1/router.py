@@ -12,6 +12,7 @@ from app.presentation.api.v1.endpoints.internal import kpis
 from app.presentation.api.v1.endpoints.internal import migration
 from app.presentation.api.v1.endpoints.internal import chat
 from app.presentation.api.v1.endpoints.internal import folders
+from app.presentation.api.v1.endpoints.internal import db_connections
 router = APIRouter()
 
 # Include the netatmo proxy endpoints
@@ -31,3 +32,4 @@ router.include_router(kpis.router, prefix="/api/v1/kpis", tags=["Employee KPIs"]
 router.include_router(migration.router, prefix="/api/v1/migration", tags=["Database Migration"])
 router.include_router(chat.router, prefix="/api/v1/chat", tags=["Chat"])
 router.include_router(folders.router, prefix="/api/v1/folders", tags=["Folders"])
+router.include_router(db_connections.router, prefix="/api/v1/db-connections", tags=["DB Connections"])

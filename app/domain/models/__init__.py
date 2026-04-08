@@ -10,6 +10,7 @@ from .session import *
 from .chat_message import *
 from .chat_history import *
 from .folder import *
+from .db_connection import *
 
 __all__ = [
     "User",
@@ -24,4 +25,5 @@ __all__ = [
     "ChatMessage",
     "ChatHistory",
     "Folder",
+    "DBConnection",
 ]
