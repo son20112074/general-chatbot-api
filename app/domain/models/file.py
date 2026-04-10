@@ -33,6 +33,7 @@ class File(Base):
 
     is_embedded = Column(Boolean, default=None, nullable=True)
     is_deleted = Column(Boolean, default=False, nullable=True)
+    is_graph_extracted = Column(Boolean, default=False, nullable=True)
 
     # Classification fields
     listed_nation = Column(ARRAY(String), nullable=True)
