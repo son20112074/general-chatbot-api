@@ -326,8 +326,8 @@ class DBConnectionService:
         if not entity:
             raise ValueError("Connection not found")
 
-        if not entity.is_connected:
-            raise ValueError("Database not connected")
+        # if not entity.is_connected:
+        #     raise ValueError("Database not connected")
 
         # Safety: only allow SELECT
         if not sql.strip().lower().lstrip("(\n ").startswith(("select", "with")):
@@ -369,8 +369,8 @@ class DBConnectionService:
         if not entity:
             raise ValueError("Connection not found")
 
-        if not entity.is_connected:
-            raise ValueError("Database not connected")
+        # if not entity.is_connected:
+        #     raise ValueError("Database not connected")
 
         engine = await self._get_engine(entity)
 
@@ -464,8 +464,8 @@ class DBConnectionService:
             if not entity:
                 raise ValueError(f"Connection {conn_id} not found")
             
-            if not entity.is_connected:
-                raise ValueError(f"Connection {conn_id} is not connected")
+            # if not entity.is_connected:
+            #     raise ValueError(f"Connection {conn_id} is not connected")
                 
             # Check if user has access to this connection
             if str(entity.user_id) != str(user_id):
