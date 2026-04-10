@@ -224,8 +224,17 @@ class FolderService:
 
     # ── tree (lazy load with depth) ──────────────────────────
 
-    async def get_tree_root(self, user_id: int, role_id: Optional[int], type_filter: str = "organization", depth: int = 1) -> Dict[str, Any]:
+    async def get_tree_root(
+        self, user_id: int, role_id: Optional[int],
+        type_filter: str = "organization", depth: int = 1,
+        search_text: Optional[str] = None,
+        owner_name: Optional[str] = None,
+        role_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
         self._set_context(user_id, role_id)
+        self._search_text = search_text
+        self._owner_name = owner_name
+        self._role_name = role_name
         if type_filter == "organization":
             return await self._get_tree_root_organization(depth)
         elif type_filter == "private":
@@ -259,26 +268,97 @@ class FolderService:
         return result
 
     async def _get_tree_root_private(self, depth: int) -> Dict[str, Any]:
-        result = await self.db.execute(
-            select(Folder).where(and_(
+        children = []
+        search = getattr(self, '_search_text', None)
+        owner_name = getattr(self, '_owner_name', None)
+
+        # Files at root (no folder)
+        file_q = (
+            select(File, User.id.label("u_id"), User.full_name.label("u_name"))
+            .outerjoin(User, File.created_by == User.id)
+            .where(and_(
+                File.created_by == self._user_id, File.type == "private",
+                File.folder_id == None,
+                or_(File.is_deleted == False, File.is_deleted == None),
+            ))
+        )
+        if search:
+            file_q = file_q.where(or_(
+                File.name.ilike(f"%{search}%"),
+                User.full_name.ilike(f"%{search}%"),
+            ))
+        if owner_name:
+            file_q = file_q.where(User.full_name.ilike(f"%{owner_name}%"))
+        file_q = file_q.order_by(File.created_at.desc())
+        for row in (await self.db.execute(file_q)).all():
+            children.append(self._file_to_node(row[0], row.u_id, row.u_name))
+
+        # Root folders
+        folder_q = (
+            select(Folder)
+            .outerjoin(User, Folder.created_by == User.id)
+            .where(and_(
                 Folder.created_by == self._user_id, Folder.type == "private",
                 Folder.parent_id == None, Folder.is_deleted == False,
-            )).order_by(Folder.created_at.desc())
+            ))
         )
-        children = []
-        for f in result.scalars().all():
+        if search:
+            folder_q = folder_q.where(or_(
+                Folder.name.ilike(f"%{search}%"),
+                User.full_name.ilike(f"%{search}%"),
+            ))
+        if owner_name:
+            folder_q = folder_q.where(User.full_name.ilike(f"%{owner_name}%"))
+        folder_q = folder_q.order_by(Folder.created_at.desc())
+        for f in (await self.db.execute(folder_q)).scalars().all():
             children.append(await self._build_folder_node(f, depth - 1))
+
         return {"children": children}
 
     async def _get_tree_root_general(self, depth: int) -> Dict[str, Any]:
-        result = await self.db.execute(
-            select(Folder).where(and_(
-                Folder.type == "general", Folder.parent_id == None, Folder.is_deleted == False,
-            )).order_by(Folder.created_at.desc())
-        )
         children = []
-        for f in result.scalars().all():
+        search = getattr(self, '_search_text', None)
+        owner_name = getattr(self, '_owner_name', None)
+
+        # Files at root (no folder)
+        file_q = (
+            select(File, User.id.label("u_id"), User.full_name.label("u_name"))
+            .outerjoin(User, File.created_by == User.id)
+            .where(and_(
+                File.type == "general", File.folder_id == None,
+                or_(File.is_deleted == False, File.is_deleted == None),
+            ))
+        )
+        if search:
+            file_q = file_q.where(or_(
+                File.name.ilike(f"%{search}%"),
+                User.full_name.ilike(f"%{search}%"),
+            ))
+        if owner_name:
+            file_q = file_q.where(User.full_name.ilike(f"%{owner_name}%"))
+        file_q = file_q.order_by(File.created_at.desc())
+        for row in (await self.db.execute(file_q)).all():
+            children.append(self._file_to_node(row[0], row.u_id, row.u_name))
+
+        # Root folders
+        folder_q = (
+            select(Folder)
+            .outerjoin(User, Folder.created_by == User.id)
+            .where(and_(
+                Folder.type == "general", Folder.parent_id == None, Folder.is_deleted == False,
+            ))
+        )
+        if search:
+            folder_q = folder_q.where(or_(
+                Folder.name.ilike(f"%{search}%"),
+                User.full_name.ilike(f"%{search}%"),
+            ))
+        if owner_name:
+            folder_q = folder_q.where(User.full_name.ilike(f"%{owner_name}%"))
+        folder_q = folder_q.order_by(Folder.created_at.desc())
+        for f in (await self.db.execute(folder_q)).scalars().all():
             children.append(await self._build_folder_node(f, depth - 1))
+
         return {"children": children}
 
     async def get_tree_children(
@@ -288,6 +368,9 @@ class FolderService:
         owner_name: Optional[str] = None, role_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         self._set_context(user_id, user_role_id)
+        self._search_text = search_text
+        self._owner_name = owner_name
+        self._role_name = role_name
         children: List[Dict[str, Any]] = []
         total = 0
         if node_type == "role":
@@ -357,6 +440,9 @@ class FolderService:
         items: List[Dict] = []
         ownership_file = self._ownership_filter_file(role_id)
         ownership_folder = self._ownership_filter_folder(role_id)
+        search = getattr(self, '_search_text', None)
+        owner_name = getattr(self, '_owner_name', None)
+        role_name = getattr(self, '_role_name', None)
 
         # Files at root of this role
         file_q = (
@@ -367,27 +453,48 @@ class FolderService:
                 File.type == "organization",
                 or_(File.is_deleted == False, File.is_deleted == None),
                 *ownership_file,
-            )).order_by(File.created_at.desc())
+            ))
         )
+        if search:
+            file_q = file_q.where(or_(
+                File.name.ilike(f"%{search}%"),
+                User.full_name.ilike(f"%{search}%"),
+            ))
+        if owner_name:
+            file_q = file_q.where(User.full_name.ilike(f"%{owner_name}%"))
+        file_q = file_q.order_by(File.created_at.desc())
         for row in (await self.db.execute(file_q)).all():
             items.append(self._file_to_node(row[0], row.u_id, row.u_name))
 
         # Root folders at this role
         folder_q = (
-            select(Folder).where(and_(
+            select(Folder)
+            .outerjoin(User, Folder.created_by == User.id)
+            .where(and_(
                 Folder.role_id == role_id, Folder.type == "organization",
                 Folder.parent_id == None, Folder.is_deleted == False,
                 *ownership_folder,
-            )).order_by(Folder.created_at.desc())
+            ))
         )
+        if search:
+            folder_q = folder_q.where(or_(
+                Folder.name.ilike(f"%{search}%"),
+                User.full_name.ilike(f"%{search}%"),
+            ))
+        if owner_name:
+            folder_q = folder_q.where(User.full_name.ilike(f"%{owner_name}%"))
+        folder_q = folder_q.order_by(Folder.created_at.desc())
         for f in (await self.db.execute(folder_q)).scalars().all():
             items.append(await self._build_folder_node(f, depth - 1))
 
         # Child roles
-        child_roles_result = await self.db.execute(
-            select(Role).where(Role.parent_path == child_path).order_by(Role.created_at.desc())
-        )
-        for r in child_roles_result.scalars().all():
+        role_q = select(Role).where(Role.parent_path == child_path)
+        if search:
+            role_q = role_q.where(Role.name.ilike(f"%{search}%"))
+        if role_name:
+            role_q = role_q.where(Role.name.ilike(f"%{role_name}%"))
+        role_q = role_q.order_by(Role.created_at.desc())
+        for r in (await self.db.execute(role_q)).scalars().all():
             items.append(await self._build_role_node(r.id, r.parent_path, depth - 1))
 
         return items
@@ -397,6 +504,8 @@ class FolderService:
         items: List[Dict] = []
         ownership_file = self._ownership_filter_file(folder_role_id) if folder_role_id else []
         ownership_folder = self._ownership_filter_folder(folder_role_id) if folder_role_id else []
+        search = getattr(self, '_search_text', None)
+        owner_name = getattr(self, '_owner_name', None)
 
         # Files
         file_q = (
@@ -406,18 +515,36 @@ class FolderService:
                 File.folder_id == folder_id,
                 or_(File.is_deleted == False, File.is_deleted == None),
                 *ownership_file,
-            )).order_by(File.created_at.desc())
+            ))
         )
+        if search:
+            file_q = file_q.where(or_(
+                File.name.ilike(f"%{search}%"),
+                User.full_name.ilike(f"%{search}%"),
+            ))
+        if owner_name:
+            file_q = file_q.where(User.full_name.ilike(f"%{owner_name}%"))
+        file_q = file_q.order_by(File.created_at.desc())
         for row in (await self.db.execute(file_q)).all():
             items.append(self._file_to_node(row[0], row.u_id, row.u_name))
 
         # Sub-folders
         folder_q = (
-            select(Folder).where(and_(
+            select(Folder)
+            .outerjoin(User, Folder.created_by == User.id)
+            .where(and_(
                 Folder.parent_id == folder_id, Folder.is_deleted == False,
                 *ownership_folder,
-            )).order_by(Folder.created_at.desc())
+            ))
         )
+        if search:
+            folder_q = folder_q.where(or_(
+                Folder.name.ilike(f"%{search}%"),
+                User.full_name.ilike(f"%{search}%"),
+            ))
+        if owner_name:
+            folder_q = folder_q.where(User.full_name.ilike(f"%{owner_name}%"))
+        folder_q = folder_q.order_by(Folder.created_at.desc())
         for f in (await self.db.execute(folder_q)).scalars().all():
             items.append(await self._build_folder_node(f, depth - 1))
 
@@ -459,7 +586,10 @@ class FolderService:
             ))
         )
         if search_text:
-            file_q = file_q.where(File.name.ilike(f"%{search_text}%"))
+            file_q = file_q.where(or_(
+                File.name.ilike(f"%{search_text}%"),
+                User.full_name.ilike(f"%{search_text}%"),
+            ))
         if owner_name:
             file_q = file_q.where(User.full_name.ilike(f"%{owner_name}%"))
         file_q = file_q.order_by(File.created_at.desc())
@@ -467,21 +597,31 @@ class FolderService:
             file_items.append(self._file_to_node(row[0], row.u_id, row.u_name))
 
         # Folders
-        folder_q = select(Folder).where(and_(
-            Folder.role_id == role_id, Folder.type == "organization",
-            Folder.parent_id == None, Folder.is_deleted == False,
-            *ownership_folder,
-        ))
+        folder_q = (
+            select(Folder)
+            .outerjoin(User, Folder.created_by == User.id)
+            .where(and_(
+                Folder.role_id == role_id, Folder.type == "organization",
+                Folder.parent_id == None, Folder.is_deleted == False,
+                *ownership_folder,
+            ))
+        )
         if search_text:
-            folder_q = folder_q.where(or_(Folder.name.ilike(f"%{search_text}%"), Folder.description.ilike(f"%{search_text}%")))
+            folder_q = folder_q.where(or_(
+                Folder.name.ilike(f"%{search_text}%"),
+                Folder.description.ilike(f"%{search_text}%"),
+                User.full_name.ilike(f"%{search_text}%"),
+            ))
         if owner_name:
-            folder_q = folder_q.join(User, Folder.created_by == User.id).where(User.full_name.ilike(f"%{owner_name}%"))
+            folder_q = folder_q.where(User.full_name.ilike(f"%{owner_name}%"))
         folder_q = folder_q.order_by(Folder.created_at.desc())
         for f in (await self.db.execute(folder_q)).scalars().all():
             folder_items.append(await self._build_folder_node(f, depth - 1))
 
         # Child roles
         role_q = select(Role).where(Role.parent_path == child_path)
+        if search_text:
+            role_q = role_q.where(Role.name.ilike(f"%{search_text}%"))
         if role_name:
             role_q = role_q.where(Role.name.ilike(f"%{role_name}%"))
         role_q = role_q.order_by(Role.created_at.desc())
@@ -518,7 +658,10 @@ class FolderService:
             ))
         )
         if search_text:
-            file_q = file_q.where(File.name.ilike(f"%{search_text}%"))
+            file_q = file_q.where(or_(
+                File.name.ilike(f"%{search_text}%"),
+                User.full_name.ilike(f"%{search_text}%"),
+            ))
         if owner_name:
             file_q = file_q.where(User.full_name.ilike(f"%{owner_name}%"))
         file_q = file_q.order_by(File.created_at.desc())
@@ -526,14 +669,22 @@ class FolderService:
             file_items.append(self._file_to_node(row[0], row.u_id, row.u_name))
 
         # Sub-folders
-        folder_q = select(Folder).where(and_(
-            Folder.parent_id == folder_id, Folder.is_deleted == False,
-            *ownership_folder,
-        ))
+        folder_q = (
+            select(Folder)
+            .outerjoin(User, Folder.created_by == User.id)
+            .where(and_(
+                Folder.parent_id == folder_id, Folder.is_deleted == False,
+                *ownership_folder,
+            ))
+        )
         if search_text:
-            folder_q = folder_q.where(or_(Folder.name.ilike(f"%{search_text}%"), Folder.description.ilike(f"%{search_text}%")))
+            folder_q = folder_q.where(or_(
+                Folder.name.ilike(f"%{search_text}%"),
+                Folder.description.ilike(f"%{search_text}%"),
+                User.full_name.ilike(f"%{search_text}%"),
+            ))
         if owner_name:
-            folder_q = folder_q.join(User, Folder.created_by == User.id).where(User.full_name.ilike(f"%{owner_name}%"))
+            folder_q = folder_q.where(User.full_name.ilike(f"%{owner_name}%"))
         folder_q = folder_q.order_by(Folder.created_at.desc())
         for f in (await self.db.execute(folder_q)).scalars().all():
             folder_items.append(await self._build_folder_node(f, depth - 1))

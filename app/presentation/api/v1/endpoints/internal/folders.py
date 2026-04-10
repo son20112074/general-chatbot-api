@@ -126,12 +126,18 @@ async def get_folder(
 async def get_tree_root(
     type_filter: str = Query(..., regex="^(organization|private|general)$", description="Required: organization, private, or general"),
     depth: int = Query(1, ge=1, le=10, description="How many levels deep to load (1=children only, max 10)"),
+    search_text: Optional[str] = Query(None, description="Search by file/folder name, owner name, or role name (partial match)"),
+    owner_name: Optional[str] = Query(None, description="Filter by owner (creator) full_name"),
+    role_name: Optional[str] = Query(None, description="Filter by role name"),
     db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(get_current_user),
 ):
     service = FolderService(db)
     try:
-        return await service.get_tree_root(current_user.user_id, current_user.role_id, type_filter, depth)
+        return await service.get_tree_root(
+            current_user.user_id, current_user.role_id, type_filter, depth,
+            search_text, owner_name, role_name,
+        )
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
