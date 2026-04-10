@@ -1,5 +1,6 @@
 import uvicorn
 import threading
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -7,13 +8,23 @@ import asyncio
 from app.core.database import engine, Base
 from app.presentation.api.v1.router import router
 from app.core.logger import setup_logging
+from app.crons import start_scheduler, stop_scheduler
 import multiprocessing
 import os
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_scheduler()
+    yield
+    stop_scheduler()
+
 
 app = FastAPI(
     title="TMS API Service",
     description="A task management system API service",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Configure CORS
