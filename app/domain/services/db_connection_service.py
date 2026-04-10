@@ -260,6 +260,7 @@ class DBConnectionService:
         DBConnection.id,
         DBConnection.name,
         DBConnection.type,
+        DBConnection.username,
         DBConnection.host,
         DBConnection.port,
         DBConnection.is_connected,
@@ -270,7 +271,6 @@ class DBConnectionService:
         DBConnection.database,
 )
         count_query = select(func.count()).select_from(DBConnection)
-        print(user_id)
         if params.ids:
             query = query.where(DBConnection.id.in_(params.ids))
             count_query = count_query.where(DBConnection.id.in_(params.ids))
