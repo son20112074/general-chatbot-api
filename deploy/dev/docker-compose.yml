@@ -5,8 +5,10 @@ services:
       dockerfile: Dockerfile
     image: ${IMAGE_NAME:-chatbot-api-dev}:${IMAGE_TAG:-latest}
     container_name: chatbot-api-dev
+    # Host port 8000 matches the existing nginx reverse-proxy config
+    # at /etc/nginx/sites-enabled/default (location / → localhost:8000).
     ports:
-      - "8006:8000"
+      - "8000:8000"
     volumes:
       - ../..:/app
     env_file:
