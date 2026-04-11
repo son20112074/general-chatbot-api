@@ -28,7 +28,7 @@ services:
     image: redis:alpine
     container_name: chatbot-redis-dev
     ports:
-      - "6399:6379"
+      - "6379:6379"
     networks:
       - default
       - chatbot-shared
@@ -38,8 +38,8 @@ services:
     image: eclipse-mosquitto
     container_name: chatbot-mqtt-dev
     ports:
-      - "1893:1883"
-      - "9011:9001"
+      - "1883:1883"
+      - "9001:9001"
     networks:
       - default
       - chatbot-shared
@@ -53,7 +53,7 @@ services:
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=api_proxy
     ports:
-      - "5442:5432"
+      - "5432:5432"
     networks:
       - default
       - chatbot-shared
