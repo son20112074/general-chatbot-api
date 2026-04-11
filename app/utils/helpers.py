@@ -85,7 +85,7 @@ def check_file_permission(file_obj, user_id: int, role_id: Optional[int]):
 
 
 async def compute_and_set_node_path(session: AsyncSession, file_obj):
-    """Compute node_path from file's type, role, folder and set it on the object."""
+    """Compute node_path from file's type, role, user, folder and set it on the object."""
     role_parent_path = None
     folder_parent_path = None
     if file_obj.role_id:
@@ -99,7 +99,12 @@ async def compute_and_set_node_path(session: AsyncSession, file_obj):
         if row:
             folder_parent_path = row[0]
     file_obj.node_path = compute_node_path(
-        file_obj.type, file_obj.role_id, role_parent_path, file_obj.folder_id, folder_parent_path
+        file_type=file_obj.type,
+        role_id=file_obj.role_id,
+        role_parent_path=role_parent_path,
+        user_id=file_obj.created_by,
+        folder_id=file_obj.folder_id,
+        folder_parent_path=folder_parent_path,
     )
 
 

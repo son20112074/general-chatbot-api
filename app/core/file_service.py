@@ -136,7 +136,14 @@ class FileService:
             if row:
                 folder_parent_path = row[0]
 
-        node_path = compute_node_path(file_type, actual_role_id, role_parent_path, folder_id, folder_parent_path)
+        node_path = compute_node_path(
+            file_type=file_type,
+            role_id=actual_role_id,
+            role_parent_path=role_parent_path,
+            user_id=user_id,
+            folder_id=folder_id,
+            folder_parent_path=folder_parent_path,
+        )
 
         # Create new file record
         new_file = File(

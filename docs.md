@@ -225,6 +225,16 @@ Returns files the current user can see, sorted by `created_at DESC`.
 }
 ```
 
+### `node_type: "user"`
+```json
+{
+  "node_type": "user", "id": 5, "account_name": "staff_a1",
+  "full_name": "Do Van E", "role_id": 6,
+  "has_children": true, "children": [...]
+}
+```
+`children`: files + folders the user owns at root level of their role. Populated when depth > 1, `null` otherwise.
+
 ### `node_type: "folder"`
 ```json
 {
@@ -266,6 +276,8 @@ Returns files the current user can see, sorted by `created_at DESC`.
 
 ## Tree Display Examples
 
+> Each role node now contains **user nodes** (one per user in that role) and child role nodes. Files and folders live under user nodes rather than directly under the role. Child roles remain flat siblings of user nodes under the role.
+
 ### admin (role=1) login, depth=4, type=organization
 
 ```
@@ -291,14 +303,19 @@ Returns files the current user can see, sorted by `created_at DESC`.
 ### head_a (role=4) login, depth=2
 
 ```
-▼ TP Phong A (role=4)
-│  📄 meeting_notes_q1.pdf              ← own file
-│  📁 Phong A - Tai lieu/
-│  │  📁 Sprint Q1/                      [▶]
-│  ▼ NV Phong A (role=6)                ← sees ALL NV A files (supervisor)
-│  │  📁 NV_A1 docs/ (by staff_a1)      [▶]
-│  │  📁 NV_A2 docs/ (by staff_a2)      [▶]
-│  │  📄 nv_a3_draft.pdf (by staff_a3)
+▼ Role: TP Phong A (4)
+│  ▼ User: head_a
+│  │  📄 meeting_notes_q1.pdf
+│  │  📁 Phong A - Tai lieu/
+│  │  │  📁 Sprint Q1/                 [▶]
+│  ▼ Role: NV Phong A (6)
+│  │  ▼ User: staff_a1
+│  │  │  📁 NV_A1 docs/                [▶]
+│  │  ▼ User: staff_a2
+│  │  │  📄 nv_a2_research.docx
+│  │  │  📁 NV_A2 docs/                [▶]
+│  │  ▼ User: staff_a3
+│  │  │  📄 nv_a3_draft.pdf
 ```
 
 ### staff_a1 (role=6) login, depth=2
@@ -346,18 +363,50 @@ Returns files the current user can see, sorted by `created_at DESC`.
 
 ## Error Responses
 
+### Response shape
+
+All endpoints return errors in a consistent shape:
+
 ```json
-{"detail": "Error message"}
+{
+  "detail": "Folder belongs to a different role",
+  "code": "FOLDER_ROLE_MISMATCH",
+  "status": 400
+}
 ```
+
+- `detail` — human-readable message
+- `code` — stable machine-readable identifier (for i18n / conditional handling). Immutable once shipped.
+- `status` — HTTP status code
+
+FastAPI request validation errors (422) keep their default shape with `detail` as a list of field errors — they are not routed through this envelope.
+
+### HTTP status codes
 
 | Code | Meaning |
 |------|---------|
 | `400` | Bad request |
 | `401` | Unauthorized |
-| `403` | Not creator/admin |
+| `403` | Forbidden (not creator/admin, admin org block) |
 | `404` | Not found / soft-deleted |
-| `422` | Validation error |
+| `422` | Validation error (FastAPI default shape) |
 | `500` | Server error |
+
+### Error codes
+
+| Code | Status | When |
+|---|---|---|
+| `ADMIN_CANNOT_CREATE_ORG` | 403 | Admin tries to create an organization file/folder |
+| `FOLDER_NOT_FOUND` | 404 | Folder id does not exist or is soft-deleted |
+| `FILE_NOT_FOUND` | 404 | File id does not exist or is soft-deleted |
+| `PARENT_FOLDER_NOT_FOUND` | 400 | `parent_id` passed to create does not exist |
+| `FOLDER_TYPE_MISMATCH` | 400 | Target folder's type does not match file/folder type |
+| `FOLDER_ROLE_MISMATCH` | 400 | Target folder's role_id does not match the file's role_id |
+| `CANNOT_MOVE_INTO_DESCENDANT` | 400 | Circular move attempt |
+| `CANNOT_MOVE_INTO_SELF` | 400 | Folder moved into itself |
+| `ONLY_CREATOR_OR_ADMIN` | 403 | Non-creator, non-admin attempts to update/delete/move |
+| `USER_MUST_HAVE_ROLE_FOR_ORG` | 400 | User without role tries to create organization file/folder |
+| `HTTP_<status>` | varies | Legacy HTTPException paths return `HTTP_<status_code>` as a fallback code |
 
 ---
 

@@ -2,6 +2,7 @@ from typing import Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
+from app.core.errors import AppError
 from app.domain.services.folder_service import FolderService
 from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.auth import TokenData
@@ -28,6 +29,8 @@ async def create_folder(
     try:
         folder = await service.create_folder(data, current_user.user_id, current_user.role_id)
         return folder
+    except AppError:
+        raise  # handled by global handler
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
@@ -49,6 +52,8 @@ async def update_folder(
         if not folder:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
         return folder
+    except AppError:
+        raise  # handled by global handler
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
@@ -68,6 +73,8 @@ async def delete_folder(
         success = await service.delete_folder(folder_id, current_user.user_id, current_user.role_id)
         if not success:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+    except AppError:
+        raise  # handled by global handler
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
@@ -89,6 +96,8 @@ async def move_folder(
         if not folder:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
         return folder
+    except AppError:
+        raise  # handled by global handler
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except ValueError as e:
@@ -138,6 +147,8 @@ async def get_tree_root(
             current_user.user_id, current_user.role_id, type_filter, depth,
             search_text, owner_name, role_name,
         )
+    except AppError:
+        raise  # handled by global handler
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -153,7 +164,7 @@ async def get_tree_root(
 **Order**: files → folders → roles (newest first).""")
 async def get_tree_children(
     node_id: int,
-    node_type: str = Query(..., regex="^(role|folder)$", description="Type of node to expand: role or folder"),
+    node_type: str = Query(..., regex="^(role|folder|user)$", description="Type of node to expand: role, folder, or user"),
     depth: int = Query(1, ge=1, le=10, description="Levels deep to load from this node"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
@@ -171,6 +182,8 @@ async def get_tree_children(
             depth, page, page_size, type_filter, search_text,
             owner_name, role_name,
         )
+    except AppError:
+        raise  # handled by global handler
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -190,5 +203,7 @@ async def query_folders(
             "data": [FolderResponse.model_validate(f).model_dump() for f in result["data"]],
             "total": result["total"],
         }
+    except AppError:
+        raise  # handled by global handler
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))

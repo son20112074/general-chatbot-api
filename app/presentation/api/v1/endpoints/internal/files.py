@@ -7,6 +7,8 @@ from app.core.file_service import FileService
 from app.core.query import CursorPaginationResult, QueryInput
 from app.domain.services.file_service import FileQueryService
 from app.domain.models.file import File as FileModel
+from app.domain.models.folder import Folder as FolderModel
+from app.domain.models.role import Role as RoleModel
 from app.domain.models.user import User
 from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.auth import TokenData
@@ -949,7 +951,18 @@ async def move_file(
 - Does NOT show files from other users at the same role level
 - Private files only visible to their creator (admin sees all)
 
-**Filters:** type, folder_id, owner_name, search_text. All optional.""")
+**Subtree filter (`started_node` + `type_node`):** both must be sent together.
+Matches files whose `node_path` contains the segment `<type_node>_<started_node>`.
+Recursive — any file anywhere below that node is returned.
+
+- `started_node=4, type_node="folder"` → files with node_path containing `folder_4/`
+- `started_node=3, type_node="role"`   → files under role 3 subtree
+- `started_node=5, type_node="user"`   → files owned by user 5 in their user-node
+
+**Search (`search_text`):** case-insensitive OR across file name, containing folder name,
+owner full_name, and pinned role name.
+
+**Filters:** `type`, `owner_name`. All optional.""")
 async def list_all_files(
     query_params: FileListAllSchema,
     current_user: TokenData = Depends(get_current_user),
@@ -959,17 +972,22 @@ async def list_all_files(
         user_id = current_user.user_id
         user_role_id = current_user.role_id
 
-        # Visibility: self + subordinate users
+        # ── Per-type visibility ──────────────────────────────────
+        # - organization: own + subordinate users (by role hierarchy)
+        # - private:      only creator
+        # - general:      everyone (no owner filter)
+        # - admin:        sees everything regardless of type
         if user_role_id == ADMIN_ROLE_ID:
-            allowed_user_filter = []
+            visibility_filter = []
         else:
+            # Resolve subordinate user ids for the organization branch
             child_roles_result = await session.execute(sa_text("""
                 SELECT id FROM roles
                 WHERE parent_path ILIKE :exact_path
                 OR parent_path ILIKE :anywhere_path
             """), {
                 "exact_path": f",{user_role_id},",
-                "anywhere_path": f"%,{user_role_id},%"
+                "anywhere_path": f"%,{user_role_id},%",
             })
             child_role_ids = [row[0] for row in child_roles_result.fetchall()]
             if child_role_ids:
@@ -979,48 +997,102 @@ async def list_all_files(
                 child_user_ids = [row[0] for row in child_users_result.fetchall()]
             else:
                 child_user_ids = []
-            allowed_user_filter = [FileModel.created_by.in_([user_id] + child_user_ids)]
+            allowed_org_user_ids = [user_id] + child_user_ids
 
-        # Private: only creator sees (admin sees all)
-        if user_role_id == ADMIN_ROLE_ID:
-            private_filter = []
-        else:
-            private_filter = [or_(FileModel.type != 'private', FileModel.created_by == user_id)]
+            visibility_filter = [
+                or_(
+                    # general — visible to everyone
+                    FileModel.type == "general",
+                    # private — only creator
+                    and_(
+                        FileModel.type == "private",
+                        FileModel.created_by == user_id,
+                    ),
+                    # organization — self + subordinates
+                    and_(
+                        FileModel.type == "organization",
+                        FileModel.created_by.in_(allowed_org_user_ids),
+                    ),
+                )
+            ]
 
         base_cond = and_(
             or_(FileModel.is_deleted == False, FileModel.is_deleted == None),
-            *private_filter,
-            *allowed_user_filter,
+            *visibility_filter,
         )
-        query = (
-            select(FileModel, User.id.label("u_id"), User.full_name.label("u_name"))
-            .outerjoin(User, FileModel.created_by == User.id)
-            .where(base_cond)
-        )
-        count_query = select(func.count()).select_from(FileModel).where(base_cond)
 
-        # Optional filters
-        if query_params.folder_id is not None:
-            query = query.where(FileModel.folder_id == query_params.folder_id)
-            count_query = count_query.where(FileModel.folder_id == query_params.folder_id)
+        # Single query builder joined with User/Folder/Role so we can
+        # filter and search across all of them in one pass. Reused for
+        # both the page query and the count query to keep filters in sync.
+        def _base():
+            return (
+                select(FileModel, User.id.label("u_id"), User.full_name.label("u_name"))
+                .outerjoin(User, FileModel.created_by == User.id)
+                .outerjoin(FolderModel, FileModel.folder_id == FolderModel.id)
+                .outerjoin(RoleModel, FileModel.role_id == RoleModel.id)
+                .where(base_cond)
+            )
+
+        def _count_base():
+            return (
+                select(func.count(FileModel.id))
+                .select_from(FileModel)
+                .outerjoin(User, FileModel.created_by == User.id)
+                .outerjoin(FolderModel, FileModel.folder_id == FolderModel.id)
+                .outerjoin(RoleModel, FileModel.role_id == RoleModel.id)
+                .where(base_cond)
+            )
+
+        query = _base()
+        count_query = _count_base()
+
+        # ── Subtree filter via node_path ─────────────────────────
+        # node_path format: "type_<type>/role_<id>/.../user_<id>/folder_<id>/..."
+        # To match a segment like `folder_4`, append "/" to node_path and
+        # look for "/folder_4/" — this catches both tail and middle cases.
+        if query_params.started_node is not None and query_params.type_node:
+            segment = f"{query_params.type_node}_{query_params.started_node}"
+            pattern = f"%/{segment}/%"
+            node_match = func.concat(FileModel.node_path, "/").ilike(pattern)
+            query = query.where(node_match)
+            count_query = count_query.where(node_match)
+
+        # ── type filter ──────────────────────────────────────────
         if query_params.type:
             query = query.where(FileModel.type == query_params.type)
             count_query = count_query.where(FileModel.type == query_params.type)
+
+        # ── owner_name filter ────────────────────────────────────
         if query_params.owner_name:
-            cond = User.full_name.ilike(f"%{query_params.owner_name}%")
-            query = query.where(cond)
-            count_query = count_query.outerjoin(User, FileModel.created_by == User.id).where(cond)
+            owner_cond = User.full_name.ilike(f"%{query_params.owner_name}%")
+            query = query.where(owner_cond)
+            count_query = count_query.where(owner_cond)
+
+        # ── Free-text search across file/folder/owner/role names ──
         if query_params.search_text:
-            cond = FileModel.name.ilike(f"%{query_params.search_text}%")
-            query = query.where(cond)
-            count_query = count_query.where(cond)
+            like = f"%{query_params.search_text}%"
+            search_cond = or_(
+                FileModel.name.ilike(like),
+                FolderModel.name.ilike(like),
+                User.full_name.ilike(like),
+                RoleModel.name.ilike(like),
+            )
+            query = query.where(search_cond)
+            count_query = count_query.where(search_cond)
 
         total = (await session.execute(count_query)).scalar_one()
         offset = (query_params.page - 1) * query_params.page_size
-        query = query.order_by(FileModel.created_at.desc()).offset(offset).limit(query_params.page_size)
+        query = (
+            query.order_by(FileModel.created_at.desc())
+            .offset(offset)
+            .limit(query_params.page_size)
+        )
 
-        items = [build_file_item(row[0], row.u_id, row.u_name) for row in (await session.execute(query)).all()]
-        return {"data": items, "total": total}
+        items = [
+            build_file_item(row[0], row.u_id, row.u_name)
+            for row in (await session.execute(query)).all()
+        ]
+        return {"data": items, "total": total, "message": "succeeded"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
 

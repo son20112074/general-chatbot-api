@@ -15,10 +15,17 @@ def compute_node_path(
     file_type: str,
     role_id: Optional[int] = None,
     role_parent_path: Optional[str] = None,
+    user_id: Optional[int] = None,
     folder_id: Optional[int] = None,
     folder_parent_path: Optional[str] = None,
 ) -> str:
-    """Build node_path: type_<type>/role_<id>/.../folder_<id>/..."""
+    """Build node_path: type_<type>/role_<id>/.../user_<id>/folder_<id>/...
+
+    For `type=organization`, the path includes the role chain, then the
+    owning user (so the breadcrumb reflects the per-user node in the tree),
+    then the folder chain. For `private`/`general`, the user segment is
+    omitted — those types don't group by user in the tree.
+    """
     parts = [f"type_{file_type}"]
     if role_id and file_type == "organization":
         if role_parent_path:
@@ -26,6 +33,8 @@ def compute_node_path(
                 if rid:
                     parts.append(f"role_{rid}")
         parts.append(f"role_{role_id}")
+        if user_id:
+            parts.append(f"user_{user_id}")
     if folder_id:
         if folder_parent_path:
             for fid in folder_parent_path.strip(',').split(','):
@@ -95,17 +104,41 @@ class FolderService:
     # ── create ───────────────────────────────────────────────
 
     async def create_folder(self, data: FolderCreate, user_id: int, role_id: Optional[int]) -> Folder:
+        from app.core.errors import raise_app_error
+        from app.core.error_messages import (
+            ADMIN_CANNOT_CREATE_ORG,
+            PARENT_FOLDER_NOT_FOUND,
+            USER_MUST_HAVE_ROLE_FOR_ORG,
+            FOLDER_TYPE_MISMATCH,
+            FOLDER_ROLE_MISMATCH,
+            FOLDER_OWNER_MISMATCH,
+        )
+
+        if data.type == "organization":
+            if role_id == ADMIN_ROLE_ID:
+                raise_app_error(ADMIN_CANNOT_CREATE_ORG, status=403)
+
         if data.parent_id is not None:
             parent = await self.get_folder(data.parent_id)
             if not parent:
-                raise ValueError(f"Parent folder {data.parent_id} not found")
+                raise_app_error(PARENT_FOLDER_NOT_FOUND, status=400, parent_id=data.parent_id)
+            if parent.type != data.type:
+                raise_app_error(FOLDER_TYPE_MISMATCH, status=400)
+            if data.type == "organization":
+                # Organization items live inside user nodes → parent must
+                # belong to the current user's own user-node (same role AND
+                # same owner). Private/general don't have this restriction.
+                if parent.role_id != role_id:
+                    raise_app_error(FOLDER_ROLE_MISMATCH, status=400)
+                if parent.created_by != user_id:
+                    raise_app_error(FOLDER_OWNER_MISMATCH, status=403)
 
         parent_path = await self._compute_parent_path(data.parent_id)
 
         folder_role_id = None
         if data.type == "organization":
             if not role_id:
-                raise ValueError("User must have a role to create organization folders")
+                raise_app_error(USER_MUST_HAVE_ROLE_FOR_ORG, status=400)
             folder_role_id = role_id
 
         folder = Folder(
@@ -187,6 +220,23 @@ class FolderService:
                 raise ValueError("Cannot move a folder into its own descendant")
             if data.new_parent_id == folder_id:
                 raise ValueError("Cannot move a folder into itself")
+
+            # Validate new parent matches type, and (for org) same role
+            # AND same owner (org items must live inside the owner's user node).
+            from app.core.errors import raise_app_error
+            from app.core.error_messages import (
+                FOLDER_TYPE_MISMATCH,
+                FOLDER_ROLE_MISMATCH,
+                FOLDER_OWNER_MISMATCH,
+            )
+
+            if new_parent.type != folder.type:
+                raise_app_error(FOLDER_TYPE_MISMATCH, status=400)
+            if folder.type == "organization":
+                if new_parent.role_id != folder.role_id:
+                    raise_app_error(FOLDER_ROLE_MISMATCH, status=400)
+                if new_parent.created_by != folder.created_by:
+                    raise_app_error(FOLDER_OWNER_MISMATCH, status=403)
         try:
             if folder.parent_path:
                 old_prefix = f"{folder.parent_path}{folder.id},"
@@ -213,13 +263,24 @@ class FolderService:
 
     async def _batch_update_node_paths_in_folder(self, folder_id: int, folder_prefix: str):
         result = await self.db.execute(text("""
-            SELECT f.id, f.type, f.role_id, f.folder_id, r.parent_path as role_parent_path, fo.parent_path as folder_parent_path
-            FROM files f LEFT JOIN roles r ON r.id = f.role_id LEFT JOIN folders fo ON fo.id = f.folder_id
+            SELECT f.id, f.type, f.role_id, f.created_by, f.folder_id,
+                   r.parent_path as role_parent_path,
+                   fo.parent_path as folder_parent_path
+            FROM files f
+            LEFT JOIN roles r ON r.id = f.role_id
+            LEFT JOIN folders fo ON fo.id = f.folder_id
             WHERE (f.folder_id = :folder_id OR f.folder_id IN (SELECT id FROM folders WHERE parent_path LIKE :prefix || '%'))
               AND (f.is_deleted = false OR f.is_deleted IS NULL)
         """), {"folder_id": folder_id, "prefix": folder_prefix})
         for row in result.fetchall():
-            new_path = compute_node_path(row[1], row[2], row[4], row[3], row[5])
+            new_path = compute_node_path(
+                file_type=row[1],
+                role_id=row[2],
+                role_parent_path=row[5],
+                user_id=row[3],
+                folder_id=row[4],
+                folder_parent_path=row[6],
+            )
             await self.db.execute(text("UPDATE files SET node_path = :np WHERE id = :fid"), {"np": new_path, "fid": row[0]})
 
     # ── tree (lazy load with depth) ──────────────────────────
@@ -381,6 +442,10 @@ class FolderService:
             children, total = await self._expand_folder_node(
                 node_id, depth, page, page_size, search_text, owner_name,
             )
+        elif node_type == "user":
+            children, total = await self._expand_user_node(
+                node_id, depth, page, page_size, search_text,
+            )
         return {"node_id": node_id, "node_type": node_type, "children": children, "total": total, "page": page, "page_size": page_size}
 
     # ── query (flat list with pagination) ────────────────────
@@ -432,60 +497,21 @@ class FolderService:
         return node
 
     async def _get_role_children_list(self, role_id: int, role_parent_path: Optional[str], depth: int) -> List[Dict]:
+        """Children of a role node: user nodes (for users in this role),
+        then child role nodes. Files/folders now live under user nodes."""
         if role_parent_path:
             child_path = f"{role_parent_path}{role_id},"
         else:
             child_path = f",{role_id},"
 
         items: List[Dict] = []
-        ownership_file = self._ownership_filter_file(role_id)
-        ownership_folder = self._ownership_filter_folder(role_id)
         search = getattr(self, '_search_text', None)
-        owner_name = getattr(self, '_owner_name', None)
         role_name = getattr(self, '_role_name', None)
 
-        # Files at root of this role
-        file_q = (
-            select(File, User.id.label("u_id"), User.full_name.label("u_name"))
-            .outerjoin(User, File.created_by == User.id)
-            .where(and_(
-                File.role_id == role_id, File.folder_id == None,
-                File.type == "organization",
-                or_(File.is_deleted == False, File.is_deleted == None),
-                *ownership_file,
-            ))
-        )
-        if search:
-            file_q = file_q.where(or_(
-                File.name.ilike(f"%{search}%"),
-                User.full_name.ilike(f"%{search}%"),
-            ))
-        if owner_name:
-            file_q = file_q.where(User.full_name.ilike(f"%{owner_name}%"))
-        file_q = file_q.order_by(File.created_at.desc())
-        for row in (await self.db.execute(file_q)).all():
-            items.append(self._file_to_node(row[0], row.u_id, row.u_name))
-
-        # Root folders at this role
-        folder_q = (
-            select(Folder)
-            .outerjoin(User, Folder.created_by == User.id)
-            .where(and_(
-                Folder.role_id == role_id, Folder.type == "organization",
-                Folder.parent_id == None, Folder.is_deleted == False,
-                *ownership_folder,
-            ))
-        )
-        if search:
-            folder_q = folder_q.where(or_(
-                Folder.name.ilike(f"%{search}%"),
-                User.full_name.ilike(f"%{search}%"),
-            ))
-        if owner_name:
-            folder_q = folder_q.where(User.full_name.ilike(f"%{owner_name}%"))
-        folder_q = folder_q.order_by(Folder.created_at.desc())
-        for f in (await self.db.execute(folder_q)).scalars().all():
-            items.append(await self._build_folder_node(f, depth - 1))
+        # User nodes for this role
+        users = await self._get_users_for_role(role_id)
+        for u in users:
+            items.append(await self._build_user_node(u, role_id, depth - 1))
 
         # Child roles
         role_q = select(Role).where(Role.parent_path == child_path)
@@ -562,73 +588,28 @@ class FolderService:
         if not role:
             return [], 0
 
+        # User nodes
+        users = await self._get_users_for_role(role_id)
+        user_items: List[Dict] = []
+        for u in users:
+            user_items.append(await self._build_user_node(u, role_id, depth - 1))
+
+        # Child role nodes
         if role.parent_path:
             child_path = f"{role.parent_path}{role.id},"
         else:
             child_path = f",{role.id},"
-
-        ownership_file = self._ownership_filter_file(role_id)
-        ownership_folder = self._ownership_filter_folder(role_id)
-
-        file_items: List[Dict] = []
-        folder_items: List[Dict] = []
-        role_items: List[Dict] = []
-
-        # Files
-        file_q = (
-            select(File, User.id.label("u_id"), User.full_name.label("u_name"))
-            .outerjoin(User, File.created_by == User.id)
-            .where(and_(
-                File.role_id == role_id, File.folder_id == None,
-                File.type == "organization",
-                or_(File.is_deleted == False, File.is_deleted == None),
-                *ownership_file,
-            ))
-        )
-        if search_text:
-            file_q = file_q.where(or_(
-                File.name.ilike(f"%{search_text}%"),
-                User.full_name.ilike(f"%{search_text}%"),
-            ))
-        if owner_name:
-            file_q = file_q.where(User.full_name.ilike(f"%{owner_name}%"))
-        file_q = file_q.order_by(File.created_at.desc())
-        for row in (await self.db.execute(file_q)).all():
-            file_items.append(self._file_to_node(row[0], row.u_id, row.u_name))
-
-        # Folders
-        folder_q = (
-            select(Folder)
-            .outerjoin(User, Folder.created_by == User.id)
-            .where(and_(
-                Folder.role_id == role_id, Folder.type == "organization",
-                Folder.parent_id == None, Folder.is_deleted == False,
-                *ownership_folder,
-            ))
-        )
-        if search_text:
-            folder_q = folder_q.where(or_(
-                Folder.name.ilike(f"%{search_text}%"),
-                Folder.description.ilike(f"%{search_text}%"),
-                User.full_name.ilike(f"%{search_text}%"),
-            ))
-        if owner_name:
-            folder_q = folder_q.where(User.full_name.ilike(f"%{owner_name}%"))
-        folder_q = folder_q.order_by(Folder.created_at.desc())
-        for f in (await self.db.execute(folder_q)).scalars().all():
-            folder_items.append(await self._build_folder_node(f, depth - 1))
-
-        # Child roles
         role_q = select(Role).where(Role.parent_path == child_path)
         if search_text:
             role_q = role_q.where(Role.name.ilike(f"%{search_text}%"))
         if role_name:
             role_q = role_q.where(Role.name.ilike(f"%{role_name}%"))
         role_q = role_q.order_by(Role.created_at.desc())
+        role_items: List[Dict] = []
         for r in (await self.db.execute(role_q)).scalars().all():
             role_items.append(await self._build_role_node(r.id, r.parent_path, depth - 1))
 
-        all_items = file_items + folder_items + role_items
+        all_items = user_items + role_items
         total = len(all_items)
         offset = (page - 1) * page_size
         return all_items[offset:offset + page_size], total
@@ -694,6 +675,32 @@ class FolderService:
         offset = (page - 1) * page_size
         return all_items[offset:offset + page_size], total
 
+    async def _expand_user_node(
+        self, user_id: int, depth: int, page: int, page_size: int,
+        search_text: Optional[str],
+    ) -> tuple:
+        """Expand a user node: files + folders the user owns at root of their role."""
+        user_result = await self.db.execute(
+            select(User).where(User.id == user_id)
+        )
+        user = user_result.scalar_one_or_none()
+        if not user or not user.role_id:
+            return [], 0
+
+        # Same-role isolation: non-admin cannot expand other users' nodes in their own role
+        if (
+            not self._is_admin(self._user_role_id)
+            and self._is_own_role(user.role_id)
+            and user.id != self._user_id
+        ):
+            return [], 0
+
+        items = await self._get_user_children_list(user.id, user.role_id, depth)
+
+        total = len(items)
+        offset = (page - 1) * page_size
+        return items[offset:offset + page_size], total
+
     # ── private helpers ──────────────────────────────────────
 
     def _file_to_node(self, f: File, owner_id: int, owner_name: str) -> Dict[str, Any]:
@@ -709,27 +716,29 @@ class FolderService:
         }
 
     async def _role_has_children(self, role_id: int, role_parent_path: Optional[str]) -> bool:
+        """A role node has children if it has any user OR any child role."""
+        # Child roles
         if role_parent_path:
             child_path = f"{role_parent_path}{role_id},"
         else:
             child_path = f",{role_id},"
-        r = await self.db.execute(select(func.count()).select_from(Role).where(Role.parent_path == child_path).limit(1))
+        r = await self.db.execute(
+            select(func.count()).select_from(Role).where(Role.parent_path == child_path).limit(1)
+        )
         if r.scalar_one() > 0:
             return True
 
-        ownership_folder = self._ownership_filter_folder(role_id)
-        r = await self.db.execute(select(func.count()).select_from(Folder).where(and_(
-            Folder.role_id == role_id, Folder.type == "organization",
-            Folder.parent_id == None, Folder.is_deleted == False, *ownership_folder,
-        )).limit(1))
-        if r.scalar_one() > 0:
+        # Users in this role (respecting same-role isolation)
+        if (
+            not self._is_admin(self._user_role_id)
+            and self._is_own_role(role_id)
+        ):
+            # Current user always counts as a user in their own role
             return True
 
-        ownership_file = self._ownership_filter_file(role_id)
-        r = await self.db.execute(select(func.count()).select_from(File).where(and_(
-            File.role_id == role_id, File.folder_id == None, File.type == "organization",
-            or_(File.is_deleted == False, File.is_deleted == None), *ownership_file,
-        )).limit(1))
+        r = await self.db.execute(
+            select(func.count()).select_from(User).where(User.role_id == role_id).limit(1)
+        )
         return r.scalar_one() > 0
 
     async def _folder_has_children(self, folder_id: int) -> bool:
@@ -742,3 +751,115 @@ class FolderService:
             File.folder_id == folder_id, or_(File.is_deleted == False, File.is_deleted == None),
         )).limit(1))
         return r.scalar_one() > 0
+
+    # ── user node helpers ────────────────────────────────────
+
+    async def _get_users_for_role(self, role_id: int) -> List[User]:
+        """Return users whose role_id matches. Applies same-role isolation:
+        if role_id is the current user's own role and current user is not
+        admin, only the current user is returned."""
+        search = getattr(self, '_search_text', None)
+        owner_name = getattr(self, '_owner_name', None)
+
+        if (
+            not self._is_admin(self._user_role_id)
+            and self._is_own_role(role_id)
+        ):
+            r = await self.db.execute(
+                select(User).where(User.id == self._user_id)
+            )
+            return list(r.scalars().all())
+
+        q = select(User).where(User.role_id == role_id).order_by(User.created_at.desc())
+        if owner_name:
+            q = q.where(User.full_name.ilike(f"%{owner_name}%"))
+        if search:
+            q = q.where(or_(
+                User.full_name.ilike(f"%{search}%"),
+                User.account_name.ilike(f"%{search}%"),
+            ))
+        r = await self.db.execute(q)
+        return list(r.scalars().all())
+
+    async def _user_has_children(self, user_id: int, role_id: int) -> bool:
+        """True if the user owns any file or folder at root level of `role_id`."""
+        r = await self.db.execute(
+            select(func.count()).select_from(File).where(and_(
+                File.created_by == user_id,
+                File.role_id == role_id,
+                File.type == "organization",
+                File.folder_id == None,
+                or_(File.is_deleted == False, File.is_deleted == None),
+            )).limit(1)
+        )
+        if r.scalar_one() > 0:
+            return True
+        r = await self.db.execute(
+            select(func.count()).select_from(Folder).where(and_(
+                Folder.created_by == user_id,
+                Folder.role_id == role_id,
+                Folder.type == "organization",
+                Folder.parent_id == None,
+                Folder.is_deleted == False,
+            )).limit(1)
+        )
+        return r.scalar_one() > 0
+
+    async def _build_user_node(
+        self, user: User, role_id: int, remaining_depth: int
+    ) -> Dict[str, Any]:
+        has_ch = await self._user_has_children(user.id, role_id)
+        node: Dict[str, Any] = {
+            "node_type": "user",
+            "id": user.id,
+            "account_name": user.account_name,
+            "full_name": user.full_name,
+            "role_id": user.role_id,
+            "has_children": has_ch,
+        }
+        if remaining_depth > 0 and has_ch:
+            node["children"] = await self._get_user_children_list(
+                user.id, role_id, remaining_depth
+            )
+        return node
+
+    async def _get_user_children_list(
+        self, user_id: int, role_id: int, depth: int
+    ) -> List[Dict]:
+        """Files and folders at root level of `role_id` owned by `user_id`."""
+        items: List[Dict] = []
+        search = getattr(self, '_search_text', None)
+
+        # Files at role root owned by this user
+        file_q = (
+            select(File, User.id.label("u_id"), User.full_name.label("u_name"))
+            .outerjoin(User, File.created_by == User.id)
+            .where(and_(
+                File.created_by == user_id,
+                File.role_id == role_id,
+                File.type == "organization",
+                File.folder_id == None,
+                or_(File.is_deleted == False, File.is_deleted == None),
+            ))
+        )
+        if search:
+            file_q = file_q.where(File.name.ilike(f"%{search}%"))
+        file_q = file_q.order_by(File.created_at.desc())
+        for row in (await self.db.execute(file_q)).all():
+            items.append(self._file_to_node(row[0], row.u_id, row.u_name))
+
+        # Folders at role root owned by this user
+        folder_q = select(Folder).where(and_(
+            Folder.created_by == user_id,
+            Folder.role_id == role_id,
+            Folder.type == "organization",
+            Folder.parent_id == None,
+            Folder.is_deleted == False,
+        ))
+        if search:
+            folder_q = folder_q.where(Folder.name.ilike(f"%{search}%"))
+        folder_q = folder_q.order_by(Folder.created_at.desc())
+        for f in (await self.db.execute(folder_q)).scalars().all():
+            items.append(await self._build_folder_node(f, depth - 1))
+
+        return items

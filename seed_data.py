@@ -27,11 +27,13 @@ def hash_password(password: str) -> str:
 async def seed():
     async with AsyncSessionLocal() as db:
         try:
-            result = await db.execute(text("SELECT COUNT(*) FROM roles"))
-            if result.scalar_one() > 0:
-                print("Database already has data. Skipping seed.")
-                print("To re-seed: TRUNCATE files, folders, users, roles CASCADE;")
-                return
+            # Always wipe and re-seed. TRUNCATE ... RESTART IDENTITY CASCADE
+            # resets sequences and cascades through FKs.
+            print("Wiping existing data (files, folders, users, roles)...")
+            await db.execute(text(
+                "TRUNCATE TABLE files, folders, users, roles "
+                "RESTART IDENTITY CASCADE"
+            ))
 
             pw = hash_password("123456")
 
@@ -124,60 +126,60 @@ async def seed():
                 INSERT INTO files (id, name, size, hash, path, extension, mime_type,
                     folder_id, created_by, role_id, type, node_path, is_deleted,
                     created_at, updated_at, is_processed, processing_duration, content, summary, is_embedded) VALUES
-                -- Director files (role=2)
+                -- Director files (role=2, user=2)
                 (1, 'bao_cao_q4.pdf', 2048000, 'seed_001', 'uploads/seed_001.pdf', '.pdf', 'application/pdf',
-                    1, 2, 2, 'organization', 'type_organization/role_2/folder_1', false,
+                    1, 2, 2, 'organization', 'type_organization/role_2/user_2/folder_1', false,
                     NOW() - interval '10 days', NOW(), true, 12, 'Q4 report', 'Q4 summary', true),
                 (2, 'chi_thi_2025.docx', 500000, 'seed_002', 'uploads/seed_002.docx', '.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    NULL, 2, 2, 'organization', 'type_organization/role_2', false,
+                    NULL, 2, 2, 'organization', 'type_organization/role_2/user_2', false,
                     NOW() - interval '9 days', NOW(), true, 5, 'Directive', 'Directive summary', false),
-                -- Deputy1 files (role=3)
+                -- Deputy1 files (role=3, user=3)
                 (3, 'ke_hoach_2025.docx', 512000, 'seed_003', 'uploads/seed_003.docx', '.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    2, 3, 3, 'organization', 'type_organization/role_2/role_3/folder_2', false,
+                    2, 3, 3, 'organization', 'type_organization/role_2/role_3/user_3/folder_2', false,
                     NOW() - interval '8 days', NOW(), true, 8, 'Plan 2025', '2025 plan', false),
-                -- Deputy2 files (role=3) — deputy1 should NOT see
+                -- Deputy2 files (role=3, user=11) — deputy1 should NOT see
                 (4, 'deputy2_report.pdf', 300000, 'seed_004', 'uploads/seed_004.pdf', '.pdf', 'application/pdf',
-                    11, 11, 3, 'organization', 'type_organization/role_2/role_3/folder_11', false,
+                    11, 11, 3, 'organization', 'type_organization/role_2/role_3/user_11/folder_11', false,
                     NOW() - interval '7 days', NOW(), true, 3, 'Deputy2 report', 'D2 summary', false),
-                -- Head A files (role=4)
+                -- Head A files (role=4, user=4)
                 (5, 'meeting_notes_q1.pdf', 56000, 'seed_005', 'uploads/seed_005.pdf', '.pdf', 'application/pdf',
-                    NULL, 4, 4, 'organization', 'type_organization/role_2/role_3/role_4', false,
+                    NULL, 4, 4, 'organization', 'type_organization/role_2/role_3/role_4/user_4', false,
                     NOW() - interval '6 days', NOW(), true, 5, 'Meeting Q1', 'Q1 summary', false),
                 (6, 'sprint_report.xlsx', 128000, 'seed_006', 'uploads/seed_006.xlsx', '.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                    5, 4, 4, 'organization', 'type_organization/role_2/role_3/role_4/folder_4/folder_5', false,
+                    5, 4, 4, 'organization', 'type_organization/role_2/role_3/role_4/user_4/folder_4/folder_5', false,
                     NOW() - interval '5 days', NOW(), NULL, NULL, NULL, NULL, NULL),
                 (7, 'q2_plan.docx', 90000, 'seed_007', 'uploads/seed_007.docx', '.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    6, 4, 4, 'organization', 'type_organization/role_2/role_3/role_4/folder_4/folder_6', false,
+                    6, 4, 4, 'organization', 'type_organization/role_2/role_3/role_4/user_4/folder_4/folder_6', false,
                     NOW() - interval '4 days', NOW(), true, 4, 'Q2 plan', 'Q2 plan summary', false),
-                -- Head B files (role=5)
+                -- Head B files (role=5, user=5)
                 (8, 'phongb_report.pdf', 200000, 'seed_008', 'uploads/seed_008.pdf', '.pdf', 'application/pdf',
-                    7, 5, 5, 'organization', 'type_organization/role_2/role_3/role_5/folder_7', false,
+                    7, 5, 5, 'organization', 'type_organization/role_2/role_3/role_5/user_5/folder_7', false,
                     NOW() - interval '3 days', NOW(), true, 6, 'Phong B report', 'B report', false),
-                -- Staff A1 (role=6) — a2/a3 NOT see
+                -- Staff A1 (role=6, user=6) — a2/a3 NOT see
                 (9, 'nv_a1_report.docx', 88000, 'seed_009', 'uploads/seed_009.docx', '.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    8, 6, 6, 'organization', 'type_organization/role_2/role_3/role_4/role_6/folder_8', false,
+                    8, 6, 6, 'organization', 'type_organization/role_2/role_3/role_4/role_6/user_6/folder_8', false,
                     NOW() - interval '2 days', NOW(), true, 2, 'A1 report', 'A1 summary', false),
                 (10, 'nv_a1_data.xlsx', 45000, 'seed_010', 'uploads/seed_010.xlsx', '.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                    8, 6, 6, 'organization', 'type_organization/role_2/role_3/role_4/role_6/folder_8', false,
+                    8, 6, 6, 'organization', 'type_organization/role_2/role_3/role_4/role_6/user_6/folder_8', false,
                     NOW() - interval '1 day', NOW(), NULL, NULL, NULL, NULL, NULL),
-                -- Staff A2 (role=6) — a1/a3 NOT see
+                -- Staff A2 (role=6, user=7) — a1/a3 NOT see
                 (11, 'nv_a2_notes.pdf', 32000, 'seed_011', 'uploads/seed_011.pdf', '.pdf', 'application/pdf',
-                    9, 7, 6, 'organization', 'type_organization/role_2/role_3/role_4/role_6/folder_9', false,
+                    9, 7, 6, 'organization', 'type_organization/role_2/role_3/role_4/role_6/user_7/folder_9', false,
                     NOW() - interval '2 days', NOW(), true, 2, 'A2 notes', 'A2 summary', false),
                 (12, 'nv_a2_research.docx', 67000, 'seed_012', 'uploads/seed_012.docx', '.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    NULL, 7, 6, 'organization', 'type_organization/role_2/role_3/role_4/role_6', false,
+                    NULL, 7, 6, 'organization', 'type_organization/role_2/role_3/role_4/role_6/user_7', false,
                     NOW() - interval '1 day', NOW(), true, 3, 'A2 research', 'A2 research', false),
-                -- Staff A3 (role=6) — a1/a2 NOT see
+                -- Staff A3 (role=6, user=8) — a1/a2 NOT see
                 (13, 'nv_a3_draft.pdf', 25000, 'seed_013', 'uploads/seed_013.pdf', '.pdf', 'application/pdf',
-                    NULL, 8, 6, 'organization', 'type_organization/role_2/role_3/role_4/role_6', false,
+                    NULL, 8, 6, 'organization', 'type_organization/role_2/role_3/role_4/role_6/user_8', false,
                     NOW() - interval '12 hours', NOW(), false, 1, 'A3 draft', 'A3 draft', false),
-                -- Staff B1 (role=7)
+                -- Staff B1 (role=7, user=9)
                 (14, 'nv_b1_report.docx', 55000, 'seed_014', 'uploads/seed_014.docx', '.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    10, 9, 7, 'organization', 'type_organization/role_2/role_3/role_5/role_7/folder_10', false,
+                    10, 9, 7, 'organization', 'type_organization/role_2/role_3/role_5/role_7/user_9/folder_10', false,
                     NOW() - interval '2 days', NOW(), true, 2, 'B1 report', 'B1 summary', false),
-                -- Staff B2 (role=7) — b1 NOT see
+                -- Staff B2 (role=7, user=10) — b1 NOT see
                 (15, 'nv_b2_analysis.xlsx', 78000, 'seed_015', 'uploads/seed_015.xlsx', '.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                    NULL, 10, 7, 'organization', 'type_organization/role_2/role_3/role_5/role_7', false,
+                    NULL, 10, 7, 'organization', 'type_organization/role_2/role_3/role_5/role_7/user_10', false,
                     NOW() - interval '1 day', NOW(), true, 4, 'B2 analysis', 'B2 analysis', false),
                 -- Private
                 (16, 'private_a1.txt', 4096, 'seed_016', 'uploads/seed_016.txt', '.txt', 'text/plain',

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -72,9 +72,61 @@ class FileMoveSchema(BaseModel):
     new_folder_id: Optional[int] = Field(default=None, examples=[None], description="Target folder ID, null = root")
 
 class FileListAllSchema(BaseModel):
-    folder_id: Optional[int] = Field(default=None, examples=[None], description="Filter by folder ID")
-    type: Optional[str] = Field(default=None, examples=[None], description="Filter: private/organization/general")
-    owner_name: Optional[str] = Field(default=None, examples=[None], description="Filter by creator name")
-    search_text: Optional[str] = Field(default=None, examples=[None], description="Search by file name")
+    """Query payload for POST /api/v1/files/list-all.
+
+    `started_node` + `type_node` act together as a subtree filter: files
+    are matched when their `node_path` contains the segment
+    `<type_node>_<started_node>`. Recursive by nature — any file below
+    that node in the tree is returned. Both must be provided together.
+    """
+
+    started_node: Optional[int] = Field(
+        default=None,
+        examples=[None, 4],
+        description=(
+            "Subtree root id. Combined with `type_node` to filter files by "
+            "node_path segment. Must be sent together with `type_node`."
+        ),
+    )
+    type_node: Optional[str] = Field(
+        default=None,
+        examples=[None, "folder", "role", "user"],
+        description=(
+            "Type of the subtree root: 'folder', 'role', or 'user'. "
+            "Must be sent together with `started_node`."
+        ),
+    )
+    type: Optional[str] = Field(
+        default=None,
+        examples=[None],
+        description="Filter by file type: private / organization / general",
+    )
+    owner_name: Optional[str] = Field(
+        default=None,
+        examples=[None],
+        description="Filter by creator full_name (ilike)",
+    )
+    search_text: Optional[str] = Field(
+        default=None,
+        examples=[None],
+        description=(
+            "Free-text search. Matches against file name, containing folder "
+            "name, owner full_name, or pinned role name (case-insensitive OR)."
+        ),
+    )
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def _validate_subtree_pair(self):
+        if (self.started_node is None) != (self.type_node is None):
+            raise ValueError(
+                "started_node and type_node must be provided together"
+            )
+        if self.type_node is not None and self.type_node not in (
+            "folder", "role", "user",
+        ):
+            raise ValueError(
+                "type_node must be one of: folder, role, user"
+            )
+        return self
