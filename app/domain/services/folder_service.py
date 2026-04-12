@@ -427,6 +427,7 @@ class FolderService:
         depth: int = 1, page: int = 1, page_size: int = 20,
         type_filter: Optional[str] = None, search_text: Optional[str] = None,
         owner_name: Optional[str] = None, role_name: Optional[str] = None,
+        parent_role_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         self._set_context(user_id, user_role_id)
         self._search_text = search_text
@@ -444,7 +445,7 @@ class FolderService:
             )
         elif node_type == "user":
             children, total = await self._expand_user_node(
-                node_id, depth, page, page_size, search_text,
+                node_id, depth, page, page_size, search_text, parent_role_id,
             )
         return {"node_id": node_id, "node_type": node_type, "children": children, "total": total, "page": page, "page_size": page_size}
 
@@ -677,25 +678,34 @@ class FolderService:
 
     async def _expand_user_node(
         self, user_id: int, depth: int, page: int, page_size: int,
-        search_text: Optional[str],
+        search_text: Optional[str], parent_role_id: Optional[int] = None,
     ) -> tuple:
-        """Expand a user node: files + folders the user owns at root of their role."""
+        """Expand a user node: files + folders the user created at a specific role.
+
+        `parent_role_id` is the role context where this user node appears.
+        Required because a user can appear under multiple roles (current +
+        historical). Falls back to user.role_id if not provided.
+        """
         user_result = await self.db.execute(
             select(User).where(User.id == user_id)
         )
         user = user_result.scalar_one_or_none()
-        if not user or not user.role_id:
+        if not user:
+            return [], 0
+
+        role_id = parent_role_id or user.role_id
+        if not role_id:
             return [], 0
 
         # Same-role isolation: non-admin cannot expand other users' nodes in their own role
         if (
             not self._is_admin(self._user_role_id)
-            and self._is_own_role(user.role_id)
+            and self._is_own_role(role_id)
             and user.id != self._user_id
         ):
             return [], 0
 
-        items = await self._get_user_children_list(user.id, user.role_id, depth)
+        items = await self._get_user_children_list(user.id, role_id, depth)
 
         total = len(items)
         offset = (page - 1) * page_size
@@ -713,6 +723,7 @@ class FolderService:
             "created_at": f.created_at.isoformat() if f.created_at else None,
             "updated_at": f.updated_at.isoformat() if f.updated_at else None,
             "is_processed": f.is_processed, "processing_duration": f.processing_duration,
+            "content": f.content, "summary": f.summary,
         }
 
     async def _role_has_children(self, role_id: int, role_parent_path: Optional[str]) -> bool:
@@ -755,22 +766,61 @@ class FolderService:
     # ── user node helpers ────────────────────────────────────
 
     async def _get_users_for_role(self, role_id: int) -> List[User]:
-        """Return users whose role_id matches. Applies same-role isolation:
-        if role_id is the current user's own role and current user is not
-        admin, only the current user is returned."""
+        """Return users who should appear under a role node.
+
+        Three groups:
+        1. Active users currently at this role (users.role_id == X, status=true)
+        2. Inactive users at this role who have files (predecessor, fired/retired)
+        3. Users who LEFT this role (role_id changed) but have files here
+
+        Same-role isolation (own role, non-admin): hide active peers,
+        show self + groups 2 & 3 (predecessors who left or are inactive).
+        """
         search = getattr(self, '_search_text', None)
         owner_name = getattr(self, '_owner_name', None)
+
+        # Users who created files at this role but are no longer active
+        # at this role (either inactive OR moved to a different role)
+        departed_creator_ids = (
+            select(File.created_by).where(and_(
+                File.role_id == role_id, File.type == "organization",
+                or_(File.is_deleted == False, File.is_deleted == None),
+            )).distinct()
+            .intersect(
+                select(User.id).where(
+                    or_(
+                        User.status == False,                        # inactive
+                        User.role_id != role_id,                     # moved away
+                        User.role_id == None,                        # no role
+                    )
+                )
+            )
+        )
 
         if (
             not self._is_admin(self._user_role_id)
             and self._is_own_role(role_id)
         ):
-            r = await self.db.execute(
-                select(User).where(User.id == self._user_id)
+            # Own role: self + departed predecessors (hide active peers)
+            q = (
+                select(User)
+                .where(or_(
+                    User.id == self._user_id,
+                    User.id.in_(departed_creator_ids),
+                ))
+                .order_by(User.created_at.desc())
             )
-            return list(r.scalars().all())
+        else:
+            # Admin or subordinate role: all active at role + departed
+            q = (
+                select(User)
+                .where(or_(
+                    and_(User.role_id == role_id, User.status == True),
+                    User.id.in_(departed_creator_ids),
+                ))
+                .order_by(User.created_at.desc())
+            )
 
-        q = select(User).where(User.role_id == role_id).order_by(User.created_at.desc())
         if owner_name:
             q = q.where(User.full_name.ilike(f"%{owner_name}%"))
         if search:
@@ -814,7 +864,8 @@ class FolderService:
             "id": user.id,
             "account_name": user.account_name,
             "full_name": user.full_name,
-            "role_id": user.role_id,
+            "role_id": role_id,
+            "is_active": user.status if user.status is not None else True,
             "has_children": has_ch,
         }
         if remaining_depth > 0 and has_ch:

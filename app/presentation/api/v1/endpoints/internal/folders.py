@@ -172,6 +172,7 @@ async def get_tree_children(
     search_text: Optional[str] = Query(None, description="Search by name or description"),
     owner_name: Optional[str] = Query(None, description="Filter by owner name"),
     role_name: Optional[str] = Query(None, description="Search by role name"),
+    parent_role_id: Optional[int] = Query(None, description="Required when node_type=user. The role context under which this user node appears (a user may appear under multiple roles)."),
     db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(get_current_user),
 ):
@@ -180,7 +181,7 @@ async def get_tree_children(
         return await service.get_tree_children(
             node_id, node_type, current_user.user_id, current_user.role_id,
             depth, page, page_size, type_filter, search_text,
-            owner_name, role_name,
+            owner_name, role_name, parent_role_id,
         )
     except AppError:
         raise  # handled by global handler

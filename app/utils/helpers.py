@@ -121,4 +121,6 @@ def build_file_item(f, u_id, u_name) -> dict:
         "updated_at": f.updated_at.isoformat() if f.updated_at else None,
         "is_processed": f.is_processed,
         "processing_duration": f.processing_duration,
+        "content": f.content,
+        "summary": f.summary,
     }
