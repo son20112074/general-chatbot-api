@@ -52,12 +52,17 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=api_proxy
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     networks:
       - default
       - chatbot-shared
     restart: unless-stopped
+
+volumes:
+  postgres_data:
 
 networks:
   default:

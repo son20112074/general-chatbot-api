@@ -27,13 +27,11 @@ def hash_password(password: str) -> str:
 async def seed():
     async with AsyncSessionLocal() as db:
         try:
-            # Always wipe and re-seed. TRUNCATE ... RESTART IDENTITY CASCADE
-            # resets sequences and cascades through FKs.
-            print("Wiping existing data (files, folders, users, roles)...")
-            await db.execute(text(
-                "TRUNCATE TABLE files, folders, users, roles "
-                "RESTART IDENTITY CASCADE"
-            ))
+            result = await db.execute(text("SELECT COUNT(*) FROM roles"))
+            if result.scalar_one() > 0:
+                print("Database already has data. Skipping seed.")
+                print("To force re-seed, run: python seed_data.py --force")
+                return
 
             pw = hash_password("123456")
 
@@ -234,5 +232,22 @@ async def seed():
             raise
 
 
+async def force_seed():
+    """Wipe all data and re-seed. Use with caution — destroys production data."""
+    async with AsyncSessionLocal() as db:
+        print("WARNING: Wiping ALL data (files, folders, users, roles)...")
+        await db.execute(text(
+            "TRUNCATE TABLE files, folders, users, roles "
+            "RESTART IDENTITY CASCADE"
+        ))
+        await db.commit()
+        print("Data wiped.")
+    await seed()
+
+
 if __name__ == "__main__":
-    asyncio.run(seed())
+    import sys
+    if "--force" in sys.argv:
+        asyncio.run(force_seed())
+    else:
+        asyncio.run(seed())
