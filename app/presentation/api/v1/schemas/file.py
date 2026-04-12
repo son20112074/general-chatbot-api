@@ -114,6 +114,21 @@ class FileListAllSchema(BaseModel):
             "name, owner full_name, or pinned role name (case-insensitive OR)."
         ),
     )
+    is_processed: Optional[bool] = Field(
+        default=None,
+        examples=[None, True, False],
+        description="Filter by processing status. null = all, true = processed, false = not processed.",
+    )
+    sort_by: Optional[str] = Field(
+        default="created_at",
+        examples=["created_at", "size"],
+        description="Sort field: 'created_at' or 'size'. Default: created_at.",
+    )
+    sort_order: Optional[str] = Field(
+        default="desc",
+        examples=["desc", "asc"],
+        description="Sort direction: 'asc' or 'desc'. Default: desc.",
+    )
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
 

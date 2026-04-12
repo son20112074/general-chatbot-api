@@ -962,7 +962,19 @@ Recursive — any file anywhere below that node is returned.
 **Search (`search_text`):** case-insensitive OR across file name, containing folder name,
 owner full_name, and pinned role name.
 
-**Filters:** `type`, `owner_name`. All optional.""")
+**Filters:** `type`, `owner_name`, `is_processed`. All optional.
+
+**`is_processed`:**
+- `true` → only processed files
+- `false` → only failed files
+- omit or `null` → all files (no filter)
+
+**Sort (`sort_by` + `sort_order`):** supports single or multi-field sorting.
+Fields: `created_at` (default), `size`. Direction: `desc` (default), `asc`.
+
+- Single: `"sort_by": "size", "sort_order": "asc"`
+- Multi: `"sort_by": "size,created_at", "sort_order": "asc,desc"` → ORDER BY size ASC, created_at DESC
+- If fewer sort_order values than sort_by, the last direction is reused.""")
 async def list_all_files(
     query_params: FileListAllSchema,
     current_user: TokenData = Depends(get_current_user),
@@ -973,14 +985,16 @@ async def list_all_files(
         user_role_id = current_user.role_id
 
         # ── Per-type visibility ──────────────────────────────────
-        # - organization: own + subordinate users (by role hierarchy)
+        # - organization: files at own role + subordinate roles (by role
+        #   hierarchy). Uses file.role_id — NOT file.created_by — so
+        #   historical files left behind by transferred users stay visible.
         # - private:      only creator
         # - general:      everyone (no owner filter)
         # - admin:        sees everything regardless of type
         if user_role_id == ADMIN_ROLE_ID:
             visibility_filter = []
         else:
-            # Resolve subordinate user ids for the organization branch
+            # Resolve subordinate role ids
             child_roles_result = await session.execute(sa_text("""
                 SELECT id FROM roles
                 WHERE parent_path ILIKE :exact_path
@@ -990,14 +1004,7 @@ async def list_all_files(
                 "anywhere_path": f"%,{user_role_id},%",
             })
             child_role_ids = [row[0] for row in child_roles_result.fetchall()]
-            if child_role_ids:
-                child_users_result = await session.execute(
-                    select(User.id).where(User.role_id.in_(child_role_ids))
-                )
-                child_user_ids = [row[0] for row in child_users_result.fetchall()]
-            else:
-                child_user_ids = []
-            allowed_org_user_ids = [user_id] + child_user_ids
+            allowed_role_ids = [user_role_id] + child_role_ids
 
             visibility_filter = [
                 or_(
@@ -1008,11 +1015,18 @@ async def list_all_files(
                         FileModel.type == "private",
                         FileModel.created_by == user_id,
                     ),
-                    # organization — self + subordinates
+                    # organization at own role — same-role isolation:
+                    # only files created by self (peers hidden)
                     and_(
                         FileModel.type == "organization",
-                        FileModel.created_by.in_(allowed_org_user_ids),
+                        FileModel.role_id == user_role_id,
+                        FileModel.created_by == user_id,
                     ),
+                    # organization at subordinate roles — see all files
+                    and_(
+                        FileModel.type == "organization",
+                        FileModel.role_id.in_(child_role_ids),
+                    ) if child_role_ids else and_(False),
                 )
             ]
 
@@ -1080,13 +1094,28 @@ async def list_all_files(
             query = query.where(search_cond)
             count_query = count_query.where(search_cond)
 
+        # ── is_processed filter ──────────────────────────────────
+        if query_params.is_processed is not None:
+            proc_cond = FileModel.is_processed == query_params.is_processed
+            query = query.where(proc_cond)
+            count_query = count_query.where(proc_cond)
+
+        # ── Sort (supports multiple fields: "size,created_at") ──
+        sort_field_map = {
+            "created_at": FileModel.created_at,
+            "size": FileModel.size,
+        }
+        sort_fields = [s.strip() for s in (query_params.sort_by or "created_at").split(",")]
+        sort_orders = [s.strip() for s in (query_params.sort_order or "desc").split(",")]
+        order_clauses = []
+        for i, field_name in enumerate(sort_fields):
+            col = sort_field_map.get(field_name, FileModel.created_at)
+            direction = sort_orders[i] if i < len(sort_orders) else sort_orders[-1]
+            order_clauses.append(col.asc() if direction == "asc" else col.desc())
+
         total = (await session.execute(count_query)).scalar_one()
         offset = (query_params.page - 1) * query_params.page_size
-        query = (
-            query.order_by(FileModel.created_at.desc())
-            .offset(offset)
-            .limit(query_params.page_size)
-        )
+        query = query.order_by(*order_clauses).offset(offset).limit(query_params.page_size)
 
         items = [
             build_file_item(row[0], row.u_id, row.u_name)
