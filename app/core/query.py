@@ -521,11 +521,12 @@ class CommonQuery:
     async def get_valid_users(self, role_id: int) -> List[int]:
         """Get list of valid user IDs based on role hierarchy"""
         query = """
-            SELECT u.id 
-            FROM users u 
-            LEFT JOIN roles r ON u.role_id = r.id 
-            WHERE r.parent_path ILIKE :path1 
-            OR r.parent_path ILIKE :path2
+            SELECT u.id
+            FROM users u
+            LEFT JOIN roles r ON u.role_id = r.id
+            WHERE (r.parent_path ILIKE :path1
+            OR r.parent_path ILIKE :path2)
+            AND r.is_deleted = false
         """
         path1 = f",{role_id},"
         path2 = f"%,{role_id},%"

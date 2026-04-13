@@ -997,8 +997,9 @@ async def list_all_files(
             # Resolve subordinate role ids
             child_roles_result = await session.execute(sa_text("""
                 SELECT id FROM roles
-                WHERE parent_path ILIKE :exact_path
-                OR parent_path ILIKE :anywhere_path
+                WHERE (parent_path ILIKE :exact_path
+                OR parent_path ILIKE :anywhere_path)
+                AND is_deleted = false
             """), {
                 "exact_path": f",{user_role_id},",
                 "anywhere_path": f"%,{user_role_id},%",

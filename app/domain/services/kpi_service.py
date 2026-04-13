@@ -419,10 +419,11 @@ class KPIService:
         # Query để tìm tất cả role có parent_path chứa role_id hiện tại
         # Bao gồm cả role hiện tại và tất cả role con
         role_query = text("""
-            SELECT * FROM roles 
-            WHERE id = :parent_role_id
-            OR parent_path LIKE :exact_path 
-            OR parent_path LIKE :anywhere_path 
+            SELECT * FROM roles
+            WHERE (id = :parent_role_id
+            OR parent_path LIKE :exact_path
+            OR parent_path LIKE :anywhere_path)
+            AND is_deleted = false
             ORDER BY parent_path ASC
         """)
         

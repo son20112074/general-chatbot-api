@@ -310,7 +310,7 @@ class FolderService:
             return result
         if self._is_admin(self._user_role_id):
             root_roles_result = await self.db.execute(
-                select(Role).where(or_(Role.parent_path == '', Role.parent_path == None)).order_by(Role.created_at.desc())
+                select(Role).where(or_(Role.parent_path == '', Role.parent_path == None), Role.is_deleted == False).order_by(Role.created_at.desc())
             )
             children = []
             for r in root_roles_result.scalars().all():
@@ -515,7 +515,7 @@ class FolderService:
             items.append(await self._build_user_node(u, role_id, depth - 1))
 
         # Child roles
-        role_q = select(Role).where(Role.parent_path == child_path)
+        role_q = select(Role).where(Role.parent_path == child_path, Role.is_deleted == False)
         if search:
             role_q = role_q.where(Role.name.ilike(f"%{search}%"))
         if role_name:
@@ -600,7 +600,7 @@ class FolderService:
             child_path = f"{role.parent_path}{role.id},"
         else:
             child_path = f",{role.id},"
-        role_q = select(Role).where(Role.parent_path == child_path)
+        role_q = select(Role).where(Role.parent_path == child_path, Role.is_deleted == False)
         if search_text:
             role_q = role_q.where(Role.name.ilike(f"%{search_text}%"))
         if role_name:
@@ -734,7 +734,7 @@ class FolderService:
         else:
             child_path = f",{role_id},"
         r = await self.db.execute(
-            select(func.count()).select_from(Role).where(Role.parent_path == child_path).limit(1)
+            select(func.count()).select_from(Role).where(Role.parent_path == child_path, Role.is_deleted == False).limit(1)
         )
         if r.scalar_one() > 0:
             return True
