@@ -49,10 +49,11 @@ class TaskService:
             
             # Get all child role IDs based on the current user's role hierarchy
             child_roles_query = text("""
-                SELECT r.id 
-                FROM roles r 
-                WHERE r.parent_path ILIKE :exact_path 
-                OR r.parent_path ILIKE :anywhere_path
+                SELECT r.id
+                FROM roles r
+                WHERE (r.parent_path ILIKE :exact_path
+                OR r.parent_path ILIKE :anywhere_path)
+                AND r.is_deleted = false
             """)
             
             child_roles_result = await self.session.execute(
