@@ -1,17 +1,20 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, ARRAY
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, ARRAY, Index
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 from app.core.config import settings
 
 class File(Base):
     __tablename__ = "files"
-    __table_args__ = {"schema": settings.DB_SCHEMA}
+    __table_args__ = (
+        Index('files_hash_unique_active', 'hash', unique=True, postgresql_where='is_deleted = false'),
+        {"schema": settings.DB_SCHEMA},
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(Text, nullable=False)
     size = Column(Integer, nullable=False)
-    hash = Column(String(128), nullable=False, unique=True)
+    hash = Column(String(128), nullable=False)
     path = Column(Text, nullable=False)
     extension = Column(String(20), nullable=True)
     mime_type = Column(String(100), nullable=True)

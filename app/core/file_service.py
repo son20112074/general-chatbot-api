@@ -99,7 +99,7 @@ class FileService:
 
         # Check if file already exists in database (combined_hash is unique per user)
         existing_file = await self.session.execute(
-            select(File).where(File.hash == combined_hash)
+            select(File).where(File.hash == combined_hash, File.is_deleted == False)
         )
         existing_file = existing_file.scalar_one_or_none()
 
