@@ -43,6 +43,7 @@ class File(Base):
     important_news = Column(ARRAY(String), nullable=True)
     listed_technology = Column(ARRAY(String), nullable=True)
     listed_company = Column(ARRAY(String), nullable=True)
+    listed_timeline = Column(ARRAY(String), nullable=True)
 
     # Relationships
     creator = relationship("User", foreign_keys=[created_by])
@@ -86,4 +87,5 @@ class File(Base):
             "important_news": self.important_news,
             "listed_technology": self.listed_technology,
             "listed_company": self.listed_company,
+            "listed_timeline": self.listed_timeline,
         }

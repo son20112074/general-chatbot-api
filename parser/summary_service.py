@@ -361,6 +361,7 @@ class SummaryService:
                 - listed_technology: List the main technologies, tools, or technical terms mentioned
                 - listed_company: List of organizations, main objects, or institutions mentioned (Add explaining like Công ty, Khu vực, Địa điểm, Đối tượng (human), Sản phẩm... + name)
                 - important_news: List of important news items (a news need to be unique, about 1 topic, each as a short (2 or 3) sentence)
+                - listed_timeline: List of key dates/time milestones mentioned in the document, each item must use yyyy-mm-dd format
                 
                 CRITICAL: Return ONLY valid JSON format without any additional text, explanations, or markdown formatting.
                 Do NOT use the special character in answering content that cause json parse error
@@ -370,7 +371,7 @@ class SummaryService:
                 Just return the raw JSON object.
                 
                 Example format (return exactly like this):
-                {{"listed_nation": ["Vietnam", "United States", "China"], "listed_technology": ["AI", "Machine Learning", "Blockchain"], "listed_company": ["Công ty: Google", "Khu vực: Biển Đông", "Đối tượng: Trump"], "important_news": ["Company announces new AI breakthrough in healthcare", "Partnership established between major tech companies", "New regulations affect technology sector"]}}
+                {{"listed_nation": ["Vietnam", "United States", "China"], "listed_technology": ["AI", "Machine Learning", "Blockchain"], "listed_company": ["Công ty: Google", "Khu vực: Biển Đông", "Đối tượng: Trump"], "important_news": ["Company announces new AI breakthrough in healthcare", "Partnership established between major tech companies", "New regulations affect technology sector"], "listed_timeline": ["2024-01-15", "2024-03-20"]}}
                 
                 Language: Always translate and answering in Vietnamese
                 Luôn trả về định dạng JSON chính xác.
@@ -439,7 +440,7 @@ class SummaryService:
                             metadata = json.loads(cleaned_json)
                             
                             # Validate required fields
-                            required_fields = ["listed_nation", "listed_technology", "listed_company", "important_news"]
+                            required_fields = ["listed_nation", "listed_technology", "listed_company", "important_news", "listed_timeline"]
                             for field in required_fields:
                                 if field not in metadata:
                                     metadata[field] = []

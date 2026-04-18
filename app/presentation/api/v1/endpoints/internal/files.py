@@ -24,10 +24,14 @@ from typing import List, Optional
 from datetime import datetime
 from dateutil import parser as date_parser
 import os
+from pathlib import Path
+import tempfile
 import docx
 import openpyxl
 import csv
 import codecs
+import requests
+from parser.pdf_parser import PDFParser
 
 ADMIN_ROLE_ID = settings.ADMIN_ROLE_ID
 
@@ -298,63 +302,118 @@ def extract_csv_content(file_path: str) -> str:
         raise Exception(f"Lỗi khi đọc file CSV: {str(e)}")
 
 
+def extract_pdf_content(file_path: str) -> str:
+    """Trích xuất nội dung từ file PDF bằng PDFParser hiện có."""
+    try:
+        parser = PDFParser()
+        result = parser.parse_pdf(file_path)
+        if not result.get("success"):
+            raise Exception(result.get("error", "Không thể trích xuất nội dung từ file PDF"))
+        return result.get("content", "")
+    except Exception as e:
+        raise Exception(f"Lỗi khi đọc file PDF: {str(e)}")
+
+
 @router.post("/extract-file-content", response_model=ExtractFileContentResponse)
 async def extract_file_content(
     request: ExtractFileContentRequest,
     current_user: TokenData = Depends(get_current_user)
 ):
     """
-    API để trích xuất nội dung từ file trong thư mục static
-    Hỗ trợ các định dạng: doc, docx, xlsx, txt, csv, dat
+    API để trích xuất nội dung từ file trên MinIO (public URL)
+    Hỗ trợ các định dạng: doc, docx, xlsx, txt, csv, dat, pdf
     """
+    temp_file_path: Optional[str] = None
     try:
         file_path = request.file_path
-        
-        # Kiểm tra file_path có chứa đường dẫn đầy đủ tới thư mục static
-        if not file_path.startswith('static'):
-            file_path = f"static/{file_path}"
-        
-        # Kiểm tra file có tồn tại không
-        if not os.path.exists(file_path):
-            raise HTTPException(
-                status_code=404,
-                detail=f"File {file_path} không tồn tại"
-            )
+
+        if not file_path:
+            raise HTTPException(status_code=400, detail="file_path không được để trống")
+
+        file_url = (
+            str(file_path)
+            if str(file_path).startswith(("http://", "https://"))
+            else f"{settings.STORAGE_PUBLIC_URL.rstrip('/')}/{str(file_path).lstrip('/')}"
+        )
         
         # Lấy phần mở rộng của file
         file_extension = os.path.splitext(file_path)[1].lower()
         
         # Danh sách các phần mở rộng được hỗ trợ
-        supported_extensions = ['.doc', '.docx', '.xlsx', '.txt', '.csv', '.dat']
+        supported_extensions = ['.doc', '.docx', '.xlsx', '.txt', '.csv', '.dat', '.pdf']
         
         if file_extension not in supported_extensions:
             raise HTTPException(
                 status_code=400,
                 detail=f"Định dạng file {file_extension} không được hỗ trợ. Chỉ hỗ trợ: {', '.join(supported_extensions)}"
             )
-        
+
+        # Download file từ MinIO public URL vào file tạm để tái sử dụng parser hiện có
+        file_size = None
+        modified_time = None
+        try:
+            file_suffix = file_extension or Path(str(file_path)).suffix
+            with requests.get(file_url, stream=True, timeout=60) as response:
+                if response.status_code == 404:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"File {file_path} không tồn tại trên storage"
+                    )
+                response.raise_for_status()
+
+                if response.headers.get("Content-Length"):
+                    try:
+                        file_size = int(response.headers["Content-Length"])
+                    except ValueError:
+                        file_size = None
+
+                if response.headers.get("Last-Modified"):
+                    modified_time = response.headers["Last-Modified"]
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as temp_file:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            temp_file.write(chunk)
+                    temp_file_path = temp_file.name
+        except HTTPException:
+            raise
+        except requests.RequestException as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Không thể tải file từ storage: {str(e)}"
+            )
+
         content = ""
         
         # Trích xuất nội dung dựa trên định dạng file
         if file_extension == '.docx':
-            content = extract_docx_content(file_path)
+            content = extract_docx_content(temp_file_path)
         elif file_extension == '.doc':
-            content = extract_doc_content(file_path)
+            content = extract_doc_content(temp_file_path)
         elif file_extension == '.xlsx':
-            content = extract_xlsx_content(file_path)
+            content = extract_xlsx_content(temp_file_path)
         elif file_extension in ['.txt', '.dat']:
-            content = extract_text_content(file_path)
+            content = extract_text_content(temp_file_path)
         elif file_extension == '.csv':
-            content = extract_csv_content(file_path)
+            content = extract_csv_content(temp_file_path)
+        elif file_extension == '.pdf':
+            content = extract_pdf_content(temp_file_path)
         
         # Lấy thông tin file
-        file_stats = os.stat(file_path)
+        if temp_file_path and (file_size is None or modified_time is None):
+            temp_stats = os.stat(temp_file_path)
+            if file_size is None:
+                file_size = temp_stats.st_size
+            if modified_time is None:
+                modified_time = datetime.fromtimestamp(temp_stats.st_mtime).isoformat()
+
         file_info = {
             "file_path": file_path,
+            "file_url": file_url,
             "file_name": os.path.basename(file_path),
-            "file_size": file_stats.st_size,
+            "file_size": file_size,
             "file_extension": file_extension,
-            "modified_time": datetime.fromtimestamp(file_stats.st_mtime).isoformat(),
+            "modified_time": modified_time,
             "content": content,
             "content_length": len(content)
         }
@@ -368,6 +427,12 @@ async def extract_file_content(
             status_code=500,
             detail=f"Lỗi khi trích xuất nội dung file: {str(e)}"
         )
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except Exception:
+                pass
 
 
 @router.get("/dashboard", response_model=FileDashboardResponse)

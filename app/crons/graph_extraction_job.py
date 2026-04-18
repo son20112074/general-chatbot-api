@@ -38,8 +38,8 @@ logger = get_logger()
 BATCH_SIZE = 10
 
 # Chunk size for splitting content
-CHUNK_SIZE = 8000
-CHUNK_OVERLAP = 800
+CHUNK_SIZE = 10000
+CHUNK_OVERLAP = 1000
 
 # Max concurrent LLM calls per file
 MAX_CONCURRENT_CHUNKS = 3
@@ -147,7 +147,7 @@ async def _llm_chat_json(
     }
 
     response = await http_client.post(
-        f"{settings.LLM_API}/chat/completions",
+        f"{settings.LLM_API}/v1/chat/completions",
         headers=headers,
         json=payload,
     )
@@ -564,3 +564,13 @@ async def graph_extraction_job():
             logger.info("[CronJob] Graph extraction cycle complete: processed %d files", count)
     except Exception:
         logger.exception("[CronJob] Graph extraction cycle failed")
+
+async def _run_forever() -> None:
+    """Single event loop: asyncio.run() must not be called in a tight loop (closes the loop each time)."""
+    while True:
+        await graph_extraction_job()
+        await asyncio.sleep(1)
+
+
+if __name__ == "__main__":
+    asyncio.run(_run_forever())
