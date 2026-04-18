@@ -22,11 +22,11 @@ def register_jobs(scheduler: AsyncIOScheduler):
         replace_existing=True,
     )
 
-    # Graph extraction: process files every 60 seconds
+    # Graph extraction: process files every 30 seconds
     scheduler.add_job(
         graph_extraction_job,
         trigger="interval",
-        seconds=300, # Run every 5 minutes 
+        seconds=30, # Run every 30 seconds
         id="graph_extraction",
         name="Graph Extraction",
         replace_existing=True,
