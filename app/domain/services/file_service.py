@@ -6,7 +6,7 @@ from sqlalchemy.sql import Select
 from sqlalchemy.types import Integer
 from datetime import datetime
 from dateutil import parser as date_parser
-from app.domain.models import Task, User, Role, File, TaskWork
+from app.domain.models import User, Role, File
 from app.utils.tree_builder import make_tree
 
 class QueryInput(BaseModel):

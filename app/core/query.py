@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 from sqlalchemy.types import Integer
 from datetime import datetime
-from app.domain.models import Task, User, Role, File, TaskWork, PersonalTaskStatus
+from app.domain.models import User, Role, File
 from app.utils.tree_builder import make_tree
 from sqlalchemy.orm import selectinload
 from app.core.config import settings

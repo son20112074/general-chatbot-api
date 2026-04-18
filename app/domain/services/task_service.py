@@ -2,8 +2,6 @@ from typing import List, Dict, Any, Optional
 from sqlalchemy import select, func, and_, or_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
-from app.domain.models.task import Task
-from app.domain.models.task_work import TaskWork
 from app.domain.models.user import User
 from app.domain.models.role import Role
 from datetime import datetime
