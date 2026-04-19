@@ -29,7 +29,7 @@ from app.core.config import settings
 from app.core.database import get_db_session
 from app.core.logger import get_logger
 from app.domain.models.edge import Edge
-from app.domain.models.file import File
+from app.domain.models.file import File, ExtractionState
 from app.domain.models.node import Node
 
 logger = get_logger()
@@ -51,7 +51,8 @@ RETRY_BASE_DELAY = 2.0
 # ── Allowed ontology types (for validation) ──
 VALID_ENTITY_TYPES = frozenset({
     "Person", "Country", "Organization", "Event",
-    "Location", "Weapon", "Technology", "Document",
+    "Location", "Weapon", "Technology",
+    "Document",
 })
 VALID_EDGE_TYPES = frozenset({
     "PARTICIPATES_IN", "MENTIONS", "OPERATES_IN", "INTERACTS_WITH",
@@ -65,34 +66,34 @@ ontology definition, extract all entities and relationships present in the text.
 
 You MUST follow the predefined ontology EXACTLY. Do NOT create entity types or \
 relationship types outside the ontology. If something does not fit any ontology \
-type, SKIP it.
+type, SKIP it — except for relationship types where you should use the `RELATED_TO` fallback to preserve connectivity when the relation cannot be classified.
 
 **Output valid JSON only.**
 
 ```json
 {
-  "entities": [
-    {
-      "name": "Entity Name (canonical form)",
-      "type": "EntityType (MUST match one of the ontology entity types exactly)",
-      "attributes": {"attr_name": "value", ...}
-    }
-  ],
-  "relationships": [
-    {
-      "source": "Source Entity Name",
-      "source_type": "SourceEntityType",
-      "target": "Target Entity Name",
-      "target_type": "TargetEntityType",
-      "type": "RELATIONSHIP_TYPE (MUST match one of the ontology edge types exactly)",
-      "fact": "A brief factual sentence describing this relationship"
-    }
-  ]
+    "entities": [
+        {
+            "name": "Entity Name (canonical form)",
+            "type": "EntityType (MUST match one of the ontology entity types exactly)",
+            "attributes": {"attr_name": "value", ...}
+        }
+    ],
+    "relationships": [
+        {
+            "source": "Source Entity Name",
+            "source_type": "SourceEntityType",
+            "target": "Target Entity Name",
+            "target_type": "TargetEntityType",
+            "type": "RELATIONSHIP_TYPE (MUST match one of the ontology edge types exactly, or use 'RELATED_TO' as a fallback)",
+            "fact": "A brief factual sentence describing this relationship"
+        }
+    ]
 }
 ```
 
 Rules:
-- ONLY use entity types and relationship types defined in the ontology. No exceptions.
+- ONLY use entity types and relationship types defined in the ontology. No exceptions, except mapping unknown relationship types to `RELATED_TO` to avoid losing connectivity.
 - Entity names must be in canonical form (e.g. full name for persons, official name for organizations).
 - Extract ALL entities and relationships you can find, including implicit ones.
 - Do NOT invent information not present in the text.
@@ -110,9 +111,8 @@ Entity types (USE ONLY THESE — reject anything that does not fit):
   - Location: A geographic place (city, region, base, facility, landmark)  attrs=[type, country, coordinates]
   - Weapon: A weapon, munition, or armament system  attrs=[type, caliber, range, manufacturer, designation]
   - Technology: A technology, system, platform, software, or technical capability  attrs=[type, category, manufacturer, status]
-  - Document: A report, treaty, agreement, publication, or official record  attrs=[type, date, classification, author]
 
-Relationship types (USE ONLY THESE — reject anything that does not fit):
+Relationship types (USE THESE — if a relationship can't be classified, fallback to `RELATED_TO`):
   - PARTICIPATES_IN: An entity participates in an event or activity  (Person→Event, Organization→Event, Country→Event)
   - MENTIONS: A document mentions an entity  (Document→Person, Document→Organization, Document→Event, Document→Location, Document→Country, Document→Weapon, Document→Technology)
   - OPERATES_IN: An entity operates in a location or country  (Organization→Location, Organization→Country, Person→Location, Person→Country)
@@ -204,15 +204,16 @@ def _validate_extracted(extracted: dict[str, Any]) -> dict[str, Any]:
         etype = (ent.get("type") or "").strip()
         if etype not in VALID_ENTITY_TYPES:
             logger.warning("Dropping entity with invalid type %r: %s", etype, ent.get("name"))
-            continue
+            continue 
         valid_entities.append(ent)
 
     valid_rels = []
     for rel in extracted.get("relationships", []):
         rtype = (rel.get("type") or "").strip()
         if rtype not in VALID_EDGE_TYPES:
-            logger.warning("Dropping relationship with invalid type %r", rtype)
-            continue
+            logger.warning("Relationship type %r not in ontology, mapping to fallback 'RELATED_TO'", rtype)
+            rel["type"] = "RELATED_TO"
+
         src_type = (rel.get("source_type") or "").strip()
         tgt_type = (rel.get("target_type") or "").strip()
         if src_type not in VALID_ENTITY_TYPES or tgt_type not in VALID_ENTITY_TYPES:
@@ -309,14 +310,32 @@ def _split_content(
 
 async def _upsert_nodes_edges(
     session: AsyncSession,
-    file_id: int,
+    doc_file: File,
     extracted: dict[str, Any],
 ) -> tuple[int, int]:
-    """Upsert entities and relationships into nodes/edges with file_id."""
+    """Upsert entities and relationships into nodes/edges for a given File object."""
     node_count = 0
     edge_count = 0
 
-    # ── Upsert nodes ──
+    # Ensure there's a node representing the file (Document)
+    file_name = (doc_file.name if doc_file and getattr(doc_file, "name", None) else f"file:{getattr(doc_file, 'id', 'unknown')}")
+
+    stmt_file = pg_insert(Node).values(
+        id=uuid.uuid4(),
+        name=file_name,
+        entity_type="Document",
+        attributes={"file_name": file_name},
+    )
+    stmt_file = stmt_file.on_conflict_do_update(
+        constraint="uq_node_name_type",
+        set_={
+            "attributes": Node.attributes + stmt_file.excluded.attributes,
+        },
+    )
+    await session.execute(stmt_file)
+    node_count += 1
+
+    # ── Upsert entity nodes ──
     for ent in extracted.get("entities", []):
         name = (ent.get("name") or "").strip()
         etype = (ent.get("type") or "Entity").strip()
@@ -325,7 +344,6 @@ async def _upsert_nodes_edges(
 
         stmt = pg_insert(Node).values(
             id=uuid.uuid4(),
-            file_id=file_id,
             name=name,
             entity_type=etype,
             attributes=ent.get("attributes") or {},
@@ -334,7 +352,6 @@ async def _upsert_nodes_edges(
             constraint="uq_node_name_type",
             set_={
                 "attributes": Node.attributes + stmt.excluded.attributes,
-                "file_id": file_id,
             },
         )
         await session.execute(stmt)
@@ -370,14 +387,12 @@ async def _upsert_nodes_edges(
         # Auto-create nodes if missing
         if not src_row:
             src_row = Node(
-                file_id=file_id,
                 name=src_name, entity_type=src_type,
             )
             session.add(src_row)
             await session.flush()
         if not tgt_row:
             tgt_row = Node(
-                file_id=file_id,
                 name=tgt_name, entity_type=tgt_type,
             )
             session.add(tgt_row)
@@ -389,7 +404,6 @@ async def _upsert_nodes_edges(
 
         stmt = pg_insert(Edge).values(
             id=uuid.uuid4(),
-            file_id=file_id,
             source_node_id=src_row.id,
             target_node_id=tgt_row.id,
             edge_type=edge_type,
@@ -401,11 +415,55 @@ async def _upsert_nodes_edges(
             set_={
                 "fact": stmt.excluded.fact,
                 "attributes": stmt.excluded.attributes,
-                "file_id": file_id,
             },
         )
         await session.execute(stmt)
         edge_count += 1
+
+    # ── Create MENTIONS edges from the file (Document) node to each entity node ──
+    # Find the file node
+    file_node = (await session.execute(
+        select(Node).where(
+            Node.name == file_name,
+            Node.entity_type == "Document",
+        )
+    )).scalar_one_or_none()
+
+    if file_node:
+        for ent in extracted.get("entities", []):
+            ent_name = (ent.get("name") or "").strip()
+            ent_type = (ent.get("type") or "Entity").strip()
+            if not ent_name:
+                continue
+
+            tgt_row = (await session.execute(
+                select(Node).where(
+                    Node.name == ent_name,
+                    Node.entity_type == ent_type,
+                )
+            )).scalar_one_or_none()
+
+            if not tgt_row:
+                # If for some reason the entity node was not found, skip
+                continue
+
+            stmt_mention = pg_insert(Edge).values(
+                id=uuid.uuid4(),
+                source_node_id=file_node.id,
+                target_node_id=tgt_row.id,
+                edge_type="MENTIONS",
+                fact=f"Mentioned in {file_name}",
+                attributes={},
+            )
+            stmt_mention = stmt_mention.on_conflict_do_update(
+                constraint="uq_edge_src_tgt_type",
+                set_={
+                    "fact": stmt_mention.excluded.fact,
+                    "attributes": stmt_mention.excluded.attributes,
+                },
+            )
+            await session.execute(stmt_mention)
+            edge_count += 1
 
     return node_count, edge_count
 
@@ -493,17 +551,17 @@ async def _process_single_file(
     merged = _deduplicate_results(successful_results)
 
     total_nodes, total_edges = await _upsert_nodes_edges(
-        session, doc_file.id, merged,
+        session, doc_file, merged,
     )
 
     duration = int(time.time() - start_time)
 
-    # Only mark as extracted if ALL chunks succeeded
+    # Only mark as done if ALL chunks succeeded
     if not failed_chunks:
         await session.execute(
             update(File)
             .where(File.id == doc_file.id)
-            .values(is_graph_extracted=True)
+            .values(extraction_state=ExtractionState.DONE)
         )
 
     logger.info(
@@ -527,7 +585,7 @@ async def _run_extraction_cycle() -> int:
             result = await session.execute(
                 select(File)
                 .where(
-                    File.is_graph_extracted.isnot(True),
+                    File.extraction_state == ExtractionState.PENDING,
                     File.content.isnot(None),
                     File.content != "",
                     File.is_deleted.isnot(True),
@@ -542,12 +600,36 @@ async def _run_extraction_cycle() -> int:
             processed = 0
             for doc_file in files:
                 try:
-                    await _process_single_file(session, http_client, doc_file)
+                    # Atomically claim the file by setting extraction_state -> 'processing'
+                    res = await session.execute(
+                        update(File)
+                        .where(File.id == doc_file.id, File.extraction_state == ExtractionState.PENDING)
+                        .values(extraction_state=ExtractionState.PROCESSING)
+                        .returning(File.id)
+                    )
+                    claimed = res.scalar_one_or_none()
+                    if not claimed:
+                        # someone else claimed it in the meantime
+                        continue
+                    # persist the claim
                     await session.commit()
-                    processed += 1
+
+                    try:
+                        await _process_single_file(session, http_client, doc_file)
+                        await session.commit()
+                        processed += 1
+                    except Exception:
+                        logger.exception("Failed to process file %d (%s)", doc_file.id, doc_file.name)
+                        # reset state to pending so it can be retried
+                        try:
+                            await session.execute(
+                                update(File).where(File.id == doc_file.id).values(extraction_state=ExtractionState.PENDING)
+                            )
+                            await session.commit()
+                        except Exception:
+                            await session.rollback()
                 except Exception:
-                    logger.exception("Failed to process file %d (%s)", doc_file.id, doc_file.name)
-                    await session.rollback()
+                    logger.exception("Claiming or processing failed for file %s", getattr(doc_file, "id", "?"))
 
     return processed
 
