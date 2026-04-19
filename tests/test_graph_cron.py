@@ -92,11 +92,11 @@ async def insert_mock_data():
             content_hash = hashlib.sha256(doc["content"].encode()).hexdigest()
             await session.execute(
                 text("""
-                    INSERT INTO files (name, size, hash, path, extension, type, content, is_processed, is_graph_extracted, is_deleted)
-                    VALUES (:name, :size, :hash, :path, :extension, :type, :content, true, false, false)
+                    INSERT INTO files (name, size, hash, path, extension, type, content, is_processed, extraction_state, is_deleted)
+                    VALUES (:name, :size, :hash, :path, :extension, :type, :content, true, 'pending', false)
                     ON CONFLICT (hash) DO UPDATE SET
                         content = EXCLUDED.content,
-                        is_graph_extracted = false
+                        extraction_state = 'pending'
                 """),
                 {
                     "name": doc["name"],
@@ -117,23 +117,23 @@ async def verify_results():
     async with get_db_session() as session:
         # Files status
         result = await session.execute(
-            text("SELECT id, name, is_graph_extracted FROM files WHERE is_deleted = false ORDER BY id")
+            text("SELECT id, name, extraction_state FROM files WHERE is_deleted = false ORDER BY id")
         )
         rows = result.fetchall()
         print(f"\n── Files ({len(rows)} rows) ──")
         for row in rows:
-            print(f"  id={row[0]}  name={row[1]}  is_graph_extracted={row[2]}")
+            print(f"  id={row[0]}  name={row[1]}  extraction_state={row[2]}")
 
         # Nodes
         result = await session.execute(text("SELECT count(*) FROM nodes"))
         node_count = result.scalar()
         print(f"\n── Total Nodes: {node_count} ──")
 
-        result = await session.execute(
-            text("SELECT name, entity_type, file_id FROM nodes ORDER BY entity_type, name LIMIT 40")
-        )
-        for row in result.fetchall():
-            print(f"  [{row[1]}] {row[0]}  (file_id={row[2]})")
+            result = await session.execute(
+                text("SELECT name, entity_type FROM nodes ORDER BY entity_type, name LIMIT 40")
+            )
+            for row in result.fetchall():
+                print(f"  [{row[1]}] {row[0]}")
 
         # Edges
         result = await session.execute(text("SELECT count(*) FROM edges"))
@@ -150,8 +150,8 @@ async def verify_results():
                 LIMIT 40
             """)
         )
-        for row in result.fetchall():
-            print(f"  {row[0]} --[{row[1]}]--> {row[2]}  (file_id={row[3]})")
+            for row in result.fetchall():
+                print(f"  {row[0]} --[{row[1]}]--> {row[2]}")
 
 
 async def main():

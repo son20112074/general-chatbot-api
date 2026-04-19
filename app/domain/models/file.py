@@ -1,8 +1,16 @@
 from datetime import datetime
+from enum import Enum as PyEnum
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, ARRAY, Index
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 from app.core.config import settings
+
+class ExtractionState(PyEnum):
+    PENDING = 'pending'
+    PROCESSING = 'processing'
+    DONE = 'done'
+
 
 class File(Base):
     __tablename__ = "files"
@@ -36,7 +44,13 @@ class File(Base):
 
     is_embedded = Column(Boolean, default=None, nullable=True)
     is_deleted = Column(Boolean, default=False, nullable=True)
-    is_graph_extracted = Column(Boolean, default=False, nullable=False, server_default="false")
+
+    extraction_state = Column(
+        SAEnum(ExtractionState, native_enum=False, length=20),
+        default=ExtractionState.PENDING,
+        nullable=False,
+        server_default="'pending'",
+    )
 
     # Classification fields
     listed_nation = Column(ARRAY(String), nullable=True)
@@ -83,6 +97,9 @@ class File(Base):
             "summary": self.summary,
             "is_embedded": self.is_embedded,
             "is_deleted": self.is_deleted,
+            "extraction_state": (getattr(self, "extraction_state", None).value
+                                 if getattr(self, "extraction_state", None) is not None and hasattr(getattr(self, "extraction_state", None), "value")
+                                 else getattr(self, "extraction_state", None)),
             "listed_nation": self.listed_nation,
             "important_news": self.important_news,
             "listed_technology": self.listed_technology,
