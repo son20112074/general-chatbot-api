@@ -20,7 +20,6 @@ class Edge(Base):
     fact = Column(Text, nullable=True)
     attributes = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=True, default=datetime.utcnow)
-    # `file_id` removed — edges are no longer tied directly to files in the schema
 
     source_node = relationship("Node", foreign_keys=[source_node_id])
     target_node = relationship("Node", foreign_keys=[target_node_id])
