@@ -19,4 +19,3 @@ class Node(Base):
     attributes = Column(JSONB, nullable=True)
     summary = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=True, default=datetime.utcnow)
-    # `file_id` removed — nodes are no longer tied directly to files in the schema

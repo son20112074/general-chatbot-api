@@ -33,7 +33,6 @@ async def get_graph_data(db: AsyncSession = Depends(get_db)):
                     entity_type=n.entity_type,
                     attributes=n.attributes or {},
                     summary=n.summary or "",
-                    file_id=n.file_id,
                     created_at=n.created_at.isoformat() if n.created_at else None,
                 )
                 for n in nodes
@@ -48,7 +47,6 @@ async def get_graph_data(db: AsyncSession = Depends(get_db)):
                     edge_type=e.edge_type,
                     fact=e.fact or "",
                     attributes=e.attributes or {},
-                    file_id=e.file_id,
                     created_at=e.created_at.isoformat() if e.created_at else None,
                 )
                 for e in edges
