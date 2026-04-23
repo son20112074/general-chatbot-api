@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # Content processing limits
     CONTENT_LIMIT: int = 20000  # Maximum content length for API processing
 
+    # Topic classification
+    TOPIC_CLASSIFY_INTERVAL_SECONDS: int = 30
+    TOPIC_CLASSIFY_BATCH_SIZE: int = 5
+    TOPIC_CLASSIFY_MAX_RETRIES: int = 3
+    TOPIC_CLASSIFY_MAX_CONTENT_CHARS: int = 16000
+
     # Add these settings to your Settings class
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379

@@ -9,6 +9,8 @@ from .folder import *
 from .db_connection import *
 from .node import *
 from .edge import *
+from .topic import *
+from .file_topic import *
 
 __all__ = [
     "User",
@@ -22,4 +24,6 @@ __all__ = [
     "DBConnection",
     "Node",
     "Edge",
+    "Topic",
+    "FileTopic",
 ]

@@ -80,6 +80,14 @@ class FileListAllSchema(BaseModel):
     that node in the tree is returned. Both must be provided together.
     """
 
+    topic_id: Optional[int] = Field(
+        default=None,
+        examples=[None, 4],
+        description=(
+            "Filter files by topic_id"
+        ),
+    )
+
     started_node: Optional[int] = Field(
         default=None,
         examples=[None, 4],

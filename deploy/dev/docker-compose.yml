@@ -20,7 +20,6 @@ services:
       - redis
       - mqtt-broker
     networks:
-      - default
       - chatbot-shared
     restart: unless-stopped
 
@@ -30,7 +29,6 @@ services:
     ports:
       - "6379:6379"
     networks:
-      - default
       - chatbot-shared
     restart: unless-stopped
 
@@ -41,7 +39,6 @@ services:
       - "1883:1883"
       - "9001:9001"
     networks:
-      - default
       - chatbot-shared
     restart: unless-stopped
 
@@ -57,15 +54,14 @@ services:
     ports:
       - "5432:5432"
     networks:
-      - default
       - chatbot-shared
     restart: unless-stopped
 
 volumes:
-  postgres_data:
+  postgres_data: 
+    name: postgres_data
 
 networks:
-  default:
   chatbot-shared:
     external: true
     name: chatbot-shared
