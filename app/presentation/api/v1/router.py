@@ -12,6 +12,7 @@ from app.presentation.api.v1.endpoints.internal import kpis
 from app.presentation.api.v1.endpoints.internal import migration
 from app.presentation.api.v1.endpoints.internal import chat
 from app.presentation.api.v1.endpoints.internal import db_connections
+from app.presentation.api.v1.endpoints.internal import template_extraction
 router = APIRouter()
 
 # Include the netatmo proxy endpoints
@@ -31,3 +32,4 @@ router.include_router(kpis.router, prefix="/api/v1/kpis", tags=["Employee KPIs"]
 router.include_router(migration.router, prefix="/api/v1/migration", tags=["Database Migration"])
 router.include_router(chat.router, prefix="/api/v1/chat", tags=["Chat"])
 router.include_router(db_connections.router, prefix="/api/v1/db-connections", tags=["DB Connections"])
+router.include_router(template_extraction.router, prefix="/api/v1/template-extraction", tags=["Template Extraction"])
