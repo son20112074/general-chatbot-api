@@ -9,6 +9,7 @@ from app.core.database import engine, Base
 from app.core.errors import AppError, app_error_handler, http_exception_to_app
 from app.presentation.api.v1.router import router
 from app.core.logger import setup_logging
+setup_logging()
 from app.crons import start_scheduler, stop_scheduler
 import multiprocessing
 import os

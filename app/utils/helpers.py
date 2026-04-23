@@ -1,5 +1,5 @@
-
-from fastapi import Request
+from datetime import datetime
+from dateutil import parser as date_parser
 from typing import Dict, Any, Type, TypeVar, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +10,29 @@ from app.domain.services.folder_service import compute_node_path
 
 
 T = TypeVar('T')
+
+def parse_datetime_safe(datetime_str: str) -> datetime:
+    """
+    Parse datetime string and convert to timezone-naive datetime.
+    
+    Args:
+        datetime_str: Datetime string to parse
+        
+    Returns:
+        timezone-naive datetime object
+        
+    Raises:
+        ValueError: If datetime string is invalid
+    """
+    try:
+        parsed_time = date_parser.parse(datetime_str)
+        # Convert to timezone-naive datetime if it has timezone info
+        if parsed_time.tzinfo is not None:
+            return parsed_time.replace(tzinfo=None)
+        else:
+            return parsed_time
+    except Exception as e:
+        raise ValueError(f"Invalid datetime format: {str(e)}")
 
 def dict_to_model(model_class: Type[T], data: Dict[str, Any]) -> T:
     """

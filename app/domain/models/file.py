@@ -64,6 +64,10 @@ class File(Base):
 
     extraction_attempts = Column(Integer, default=0, nullable=False, server_default='0')
 
+    # Topic classification
+    is_topic_classified = Column(Boolean, default=None, nullable=True)
+    topic_classify_retries = Column(Integer, default=0, nullable=True)
+
     # Classification fields
     listed_nation = Column(ARRAY(String), nullable=True)
     important_news = Column(ARRAY(String), nullable=True)
@@ -120,4 +124,6 @@ class File(Base):
             "listed_technology": self.listed_technology,
             "listed_company": self.listed_company,
             "listed_timeline": self.listed_timeline,
+            "is_topic_classified": self.is_topic_classified,
+            "topic_classify_retries": self.topic_classify_retries,
         }

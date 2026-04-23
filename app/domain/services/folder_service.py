@@ -356,7 +356,7 @@ class FolderService:
 
         # Root folders
         folder_q = (
-            select(Folder)
+            select(Folder, User.id.label("u_id"), User.full_name.label("u_name"))
             .outerjoin(User, Folder.created_by == User.id)
             .where(and_(
                 Folder.created_by == self._user_id, Folder.type == "private",
@@ -371,8 +371,8 @@ class FolderService:
         if owner_name:
             folder_q = folder_q.where(User.full_name.ilike(f"%{owner_name}%"))
         folder_q = folder_q.order_by(Folder.created_at.desc())
-        for f in (await self.db.execute(folder_q)).scalars().all():
-            children.append(await self._build_folder_node(f, depth - 1))
+        for f, u_id, u_name in (await self.db.execute(folder_q)).all():
+            children.append(await self._build_folder_node(f, depth - 1, u_id, u_name))
 
         return {"children": children}
 
@@ -403,7 +403,7 @@ class FolderService:
 
         # Root folders
         folder_q = (
-            select(Folder)
+            select(Folder, User.id.label("u_id"), User.full_name.label("u_name"))
             .outerjoin(User, Folder.created_by == User.id)
             .where(and_(
                 Folder.type == "general", Folder.parent_id == None, Folder.is_deleted == False,
@@ -417,8 +417,8 @@ class FolderService:
         if owner_name:
             folder_q = folder_q.where(User.full_name.ilike(f"%{owner_name}%"))
         folder_q = folder_q.order_by(Folder.created_at.desc())
-        for f in (await self.db.execute(folder_q)).scalars().all():
-            children.append(await self._build_folder_node(f, depth - 1))
+        for f, u_id, u_name in (await self.db.execute(folder_q)).all():
+            children.append(await self._build_folder_node(f, depth - 1, u_id, u_name))
 
         return {"children": children}
 
@@ -486,12 +486,18 @@ class FolderService:
             node["children"] = await self._get_role_children_list(role.id, role.parent_path, remaining_depth)
         return node
 
-    async def _build_folder_node(self, folder: Folder, remaining_depth: int) -> Dict[str, Any]:
+    async def _build_folder_node(self, folder: Folder, remaining_depth: int, owner_id: int, owner_name: str) -> Dict[str, Any]:
         has_ch = await self._folder_has_children(folder.id)
         node: Dict[str, Any] = {
-            "node_type": "folder", "id": folder.id, "name": folder.name,
-            "parent_id": folder.parent_id, "created_by": folder.created_by,
-            "type": folder.type, "description": folder.description, "has_children": has_ch,
+            "node_type": "folder", 
+            "id": folder.id, 
+            "name": folder.name,
+            "parent_id": folder.parent_id, 
+            "created_by": folder.created_by,
+            "owner": {"id": owner_id, "full_name": owner_name} if owner_id else None,
+            "type": folder.type, 
+            "description": folder.description, 
+            "has_children": has_ch,
         }
         if remaining_depth > 0 and has_ch:
             node["children"] = await self._get_folder_children_list(folder.id, folder.role_id, remaining_depth)
@@ -557,7 +563,7 @@ class FolderService:
 
         # Sub-folders
         folder_q = (
-            select(Folder)
+            select(Folder, User.id.label("u_id"), User.full_name.label("u_name"))
             .outerjoin(User, Folder.created_by == User.id)
             .where(and_(
                 Folder.parent_id == folder_id, Folder.is_deleted == False,
@@ -572,8 +578,8 @@ class FolderService:
         if owner_name:
             folder_q = folder_q.where(User.full_name.ilike(f"%{owner_name}%"))
         folder_q = folder_q.order_by(Folder.created_at.desc())
-        for f in (await self.db.execute(folder_q)).scalars().all():
-            items.append(await self._build_folder_node(f, depth - 1))
+        for f, u_id, u_name in (await self.db.execute(folder_q)).all():
+            items.append(await self._build_folder_node(f, depth - 1, u_id, u_name))
 
         return items
 
@@ -652,7 +658,7 @@ class FolderService:
 
         # Sub-folders
         folder_q = (
-            select(Folder)
+            select(Folder, User.id.label("u_id"), User.full_name.label("u_name"))
             .outerjoin(User, Folder.created_by == User.id)
             .where(and_(
                 Folder.parent_id == folder_id, Folder.is_deleted == False,
@@ -668,8 +674,8 @@ class FolderService:
         if owner_name:
             folder_q = folder_q.where(User.full_name.ilike(f"%{owner_name}%"))
         folder_q = folder_q.order_by(Folder.created_at.desc())
-        for f in (await self.db.execute(folder_q)).scalars().all():
-            folder_items.append(await self._build_folder_node(f, depth - 1))
+        for f, u_id, u_name in (await self.db.execute(folder_q)).all():
+            folder_items.append(await self._build_folder_node(f, depth - 1, u_id, u_name))
 
         all_items = file_items + folder_items
         total = len(all_items)
@@ -900,17 +906,21 @@ class FolderService:
             items.append(self._file_to_node(row[0], row.u_id, row.u_name))
 
         # Folders at role root owned by this user
-        folder_q = select(Folder).where(and_(
-            Folder.created_by == user_id,
-            Folder.role_id == role_id,
-            Folder.type == "organization",
-            Folder.parent_id == None,
-            Folder.is_deleted == False,
-        ))
+        folder_q = (
+            select(Folder, User.id.label("u_id"), User.full_name.label("u_name"))
+            .outerjoin(User, Folder.created_by == User.id)
+            .where(and_(
+                Folder.created_by == user_id,
+                Folder.role_id == role_id,
+                Folder.type == "organization",
+                Folder.parent_id == None,
+                Folder.is_deleted == False,
+            ))
+        )
         if search:
             folder_q = folder_q.where(Folder.name.ilike(f"%{search}%"))
         folder_q = folder_q.order_by(Folder.created_at.desc())
-        for f in (await self.db.execute(folder_q)).scalars().all():
-            items.append(await self._build_folder_node(f, depth - 1))
+        for f, u_id, u_name in (await self.db.execute(folder_q)).all():
+            items.append(await self._build_folder_node(f, depth - 1, u_id, u_name))
 
         return items

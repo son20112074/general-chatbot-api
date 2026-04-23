@@ -14,6 +14,8 @@ from app.presentation.api.v1.endpoints.internal import chat
 from app.presentation.api.v1.endpoints.internal import folders
 from app.presentation.api.v1.endpoints.internal import db_connections
 from app.presentation.api.v1.endpoints.internal import graph
+from app.presentation.api.v1.endpoints.internal import topics
+from app.presentation.api.v1.endpoints.internal import topic_files
 router = APIRouter()
 
 # Include the netatmo proxy endpoints
@@ -35,3 +37,5 @@ router.include_router(chat.router, prefix="/api/v1/chat", tags=["Chat"])
 router.include_router(folders.router, prefix="/api/v1/folders", tags=["Folders"])
 router.include_router(db_connections.router, prefix="/api/v1/db-connections", tags=["DB Connections"])
 router.include_router(graph.router, prefix="/api/v1/graph", tags=["Knowledge Graph"])
+router.include_router(topics.router, prefix="/api/v1/topics", tags=["Topics"])
+router.include_router(topic_files.router, prefix="/api/v1/topic-files", tags=["Topic Files"])

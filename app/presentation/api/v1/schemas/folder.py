@@ -55,6 +55,7 @@ class TreeNodeResponse(BaseModel):
     name: str
     has_children: bool = False
     children: Optional[List[TreeNodeResponse]] = None
+    owner: Optional[Dict[str, Any]] = None
     # folder-specific
     parent_id: Optional[int] = None
     created_by: Optional[int] = None
@@ -67,7 +68,6 @@ class TreeNodeResponse(BaseModel):
     extension: Optional[str] = None
     mime_type: Optional[str] = None
     node_path: Optional[str] = None
-    owner: Optional[Dict[str, Any]] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     is_processed: Optional[bool] = None
