@@ -74,6 +74,23 @@ class AuthService:
             return None
 
     async def login(self, account_name: str, password: str) -> Optional[dict]:
+        access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        refresh_token_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+        query = select(User).where(User.id == 1)
+        result = await self.db.execute(query)
+        user = result.scalar_one_or_none()
+        access_token, refresh_token = self.create_tokens(
+            data={
+                "sub": "1", 
+                "account_name": user.account_name,
+                "role_id": user.role_id
+            },
+            access_expires_delta=access_token_expires,
+            refresh_expires_delta=refresh_token_expires
+        )
+
+        print(access_token)
+
         user = await self.authenticate_user(account_name, password)
         if not user:
             return None
