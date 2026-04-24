@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum as PyEnum
 
-from sqlalchemy import ARRAY, Boolean, Column, DateTime
+from sqlalchemy import ARRAY, Boolean, Column, DateTime, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy import ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import relationship
@@ -66,7 +66,7 @@ class File(Base):
 
     # Topic classification
     is_topic_classified = Column(Boolean, default=None, nullable=True)
-    topic_classify_retries = Column(Integer, default=0, nullable=True)
+    topic_classify_retries = Column(Integer, nullable=True, server_default='0')
 
     # Classification fields
     listed_nation = Column(ARRAY(String), nullable=True)
@@ -125,5 +125,5 @@ class File(Base):
             "listed_company": self.listed_company,
             "listed_timeline": self.listed_timeline,
             "is_topic_classified": self.is_topic_classified,
-            "topic_classify_retries": self.topic_classify_retries,
+            "topic_classify_retries": getattr(self, "topic_classify_retries", 0),
         }
