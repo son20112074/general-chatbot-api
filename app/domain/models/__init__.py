@@ -11,6 +11,9 @@ from .node import *
 from .edge import *
 from .topic import *
 from .file_topic import *
+from .report_document import *
+from .report_template import *
+from .report import *
 
 __all__ = [
     "User",
@@ -26,4 +29,8 @@ __all__ = [
     "Edge",
     "Topic",
     "FileTopic",
+    "ReportDocument",
+    "ReportTemplate",
+    "Report"
+    
 ]

@@ -1,7 +1,8 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.memory import MemoryJobStore
-from app.core.logger import get_logger
+from app.core.logger import get_logger, setup_logging
 
+setup_logging() 
 logger = get_logger()
 
 scheduler = AsyncIOScheduler(
@@ -13,7 +14,7 @@ scheduler = AsyncIOScheduler(
 def start_scheduler():
     """Start the APScheduler and register all cron jobs."""
     from app.crons.jobs import register_jobs
-
+    logger.info("Schedule imported")
     register_jobs(scheduler)
     scheduler.start()
     logger.info("Scheduler started")
