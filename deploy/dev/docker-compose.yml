@@ -23,44 +23,6 @@ services:
       - chatbot-shared
     restart: unless-stopped
 
-  redis:
-    image: redis:alpine
-    container_name: chatbot-redis-dev
-    ports:
-      - "6379:6379"
-    networks:
-      - chatbot-shared
-    restart: unless-stopped
-
-  mqtt-broker:
-    image: eclipse-mosquitto
-    container_name: chatbot-mqtt-dev
-    ports:
-      - "1883:1883"
-      - "9001:9001"
-    networks:
-      - chatbot-shared
-    restart: unless-stopped
-
-  db:
-    image: postgres:14
-    container_name: chatbot-db-dev
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=api_proxy
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    networks:
-      - chatbot-shared
-    restart: unless-stopped
-
-volumes:
-  postgres_data: 
-    name: postgres_data
-
 networks:
   chatbot-shared:
     external: true
