@@ -13,11 +13,10 @@ from app.presentation.api.v1.endpoints.internal import migration
 from app.presentation.api.v1.endpoints.internal import chat
 from app.presentation.api.v1.endpoints.internal import folders
 from app.presentation.api.v1.endpoints.internal import db_connections
-<<<<<<< HEAD
 from app.presentation.api.v1.endpoints.internal import graph
-=======
->>>>>>> 040e97d2e3912bb08ee28b309bf4f9065254fa5f
 from app.presentation.api.v1.endpoints.internal import template_extraction
+from app.presentation.api.v1.endpoints.internal import reports
+
 router = APIRouter()
 
 # Include the netatmo proxy endpoints
@@ -40,3 +39,4 @@ router.include_router(folders.router, prefix="/api/v1/folders", tags=["Folders"]
 router.include_router(db_connections.router, prefix="/api/v1/db-connections", tags=["DB Connections"])
 router.include_router(graph.router, prefix="/api/v1/graph", tags=["Knowledge Graph"])
 router.include_router(template_extraction.router, prefix="/api/v1/template-extraction", tags=["Template Extraction"])
+router.include_router(reports.router, prefix="/api/v1/reports", tags=["Reports"])

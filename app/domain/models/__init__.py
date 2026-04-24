@@ -9,6 +9,9 @@ from .folder import *
 from .db_connection import *
 from .node import *
 from .edge import *
+from .report_document import *
+from .report_template import *
+from .report import *
 
 __all__ = [
     "User",
@@ -22,4 +25,8 @@ __all__ = [
     "DBConnection",
     "Node",
     "Edge",
+    "ReportDocument",
+    "ReportTemplate",
+    "Report"
+    
 ]
