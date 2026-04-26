@@ -1,25 +1,38 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, Index, ForeignKey
-from sqlalchemy.sql import func
+import enum
+
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-import enum
-from app.core.database import Base
+from sqlalchemy.sql import func
+
 from app.core.config import settings
+from app.core.database import Base
+
 
 class ChatMessageType(str, enum.Enum):
     """Enum for message types."""
+
     USER = "user"
     BOT = "bot"
 
+
 class ChatMessage(Base):
     """Model for chat messages."""
+
     __tablename__ = "chat_messages"
     __table_args__ = {"schema": settings.DB_SCHEMA}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(255), ForeignKey(f'{settings.DB_SCHEMA}.sessions.session_id'), nullable=False, index=True)
+    session_id = Column(
+        String(255),
+        ForeignKey(f"{settings.DB_SCHEMA}.sessions.session_id"),
+        nullable=False,
+        index=True,
+    )
     data = Column(Text, nullable=True)
     type = Column(Text, nullable=False)
+    chat_type = Column(Text)  # e.g., "text", "image", "file"
+    connection_id = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -27,4 +40,7 @@ class ChatMessage(Base):
     session = relationship("Session", back_populates="chat_messages")
 
     def __repr__(self):
-        return f"<ChatMessage(id={self.id}, session_id={self.session_id}, type={self.type})>" 
+        return f"<ChatMessage(id={self.id}, session_id={self.session_id}, type={self.type})>"
+
+    def __repr__(self):
+        return f"<ChatMessage(id={self.id}, session_id={self.session_id}, type={self.type})>"
