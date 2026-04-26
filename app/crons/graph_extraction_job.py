@@ -22,7 +22,7 @@ import uuid
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError, validator
+from pydantic import BaseModel, Field, ValidationError, root_validator, validator
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -283,9 +283,18 @@ class RelationshipSchema(BaseModel):
     @validator("source_type", "target_type")
     def entity_types_must_be_allowed(cls, v: str) -> str:
         vt = (v or "").strip()
-        if vt not in VALID_ENTITY_TYPES:
-            raise ValueError(f"Invalid entity type in relationship: {vt}")
         return vt
+
+    @root_validator(skip_on_failure=True)
+    def at_least_one_entity_type_allowed(cls, values: dict[str, Any]) -> dict[str, Any]:
+        src_t = (values.get("source_type") or "").strip()
+        tgt_t = (values.get("target_type") or "").strip()
+        # Accept relationship if either side matches a known entity type
+        if src_t in VALID_ENTITY_TYPES or tgt_t in VALID_ENTITY_TYPES:
+            return values
+        raise ValueError(
+            f"Neither source_type ({src_t}) nor target_type ({tgt_t}) is a valid entity type"
+        )
 
     @validator("type")
     def edge_type_or_fallback(cls, v: str) -> str:
@@ -304,18 +313,37 @@ class ExtractionResponse(BaseModel):
 def _validate_extracted(extracted: dict[str, Any]) -> dict[str, Any]:
     """Validate and normalize LLM output using Pydantic models.
 
-    Returns normalized dict with lists `entities` and `relationships`.
-    If validation fails entirely, returns empty lists.
+    - Keeps valid items
+    - Drops invalid ones
+    - Logs errors per item
     """
-    try:
-        resp = ExtractionResponse.parse_obj(extracted or {})
-    except ValidationError as e:
-        logger.warning("LLM output failed schema validation: %s", e)
-        return {"entities": [], "relationships": []}
-    # convert models back to plain dicts
+    extracted = extracted or {}
+
+    raw_entities = extracted.get("entities", []) or []
+    raw_relationships = extracted.get("relationships", []) or []
+
+    valid_entities: List[Dict[str, Any]] = []
+    valid_relationships: List[Dict[str, Any]] = []
+
+    # Validate entities individually
+    for i, ent in enumerate(raw_entities):
+        try:
+            obj = EntitySchema.parse_obj(ent)
+            valid_entities.append(obj.dict())
+        except ValidationError as e:
+            logger.warning("Invalid entity at index %s: %s | data=%s", i, e, ent)
+
+    # Validate relationships individually
+    for i, rel in enumerate(raw_relationships):
+        try:
+            obj = RelationshipSchema.parse_obj(rel)
+            valid_relationships.append(obj.dict())
+        except ValidationError as e:
+            logger.warning("Invalid relationship at index %s: %s | data=%s", i, e, rel)
+
     return {
-        "entities": [ent.dict() for ent in resp.entities],
-        "relationships": [rel.dict() for rel in resp.relationships],
+        "entities": valid_entities,
+        "relationships": valid_relationships,
     }
 
 
