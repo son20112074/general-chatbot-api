@@ -60,6 +60,7 @@ VALID_ENTITY_TYPES = frozenset(
         "Địa_điểm",
         "Vũ_khí",
         "Công_nghệ",
+        "Thời_gian",
     }
 )
 
@@ -72,51 +73,65 @@ VALID_EDGE_TYPES = frozenset(
         "NẰM_TẠI",
         "PHÁT_TRIỂN",
         "MUA_SẮM",
+        "SỬ_DỤNG",
+        "TẤN_CÔNG",
+        "MỤC_TIÊU_TẠI",
+        "XẢY_RA_TẠI",
+        "XẢY_RA_VÀO",
+        "THUỘC_VỀ",
+        "SỞ_HỮU",
         "LIÊN_QUAN",
     }
 )
+
+# Drop entities that have no semantic relationship after extraction + repair
+# (Document-level NHẮC_ĐẾN edges do NOT count as semantic relationships.)
+DROP_ORPHAN_ENTITIES = True
+
+# Whether to call the LLM again to try to connect orphan entities
+ENABLE_ORPHAN_REPAIR = True
 
 # ── LLM System Prompt ──
 EXTRACTION_SYSTEM_PROMPT = """\
 Bạn là một extractor để trích xuất thực thể và mối quan hệ cho đồ thị tri thức. Cho một đoạn văn bản (chunk) và định nghĩa ontology RÕ RÀNG bằng tiếng Việt, hãy trích xuất TẤT CẢ thực thể và mối quan hệ có trong đoạn văn.
 
-    PHẢI tuân thủ chính xác ontology được cung cấp. KHÔNG tạo loại thực thể hay loại mối quan hệ ngoài ontology. Nếu một mối quan hệ không khớp bất kỳ loại nào, hãy ghi `LIÊN_QUAN` để giữ tính kết nối.
+QUY TẮC BẮT BUỘC:
+1. Mỗi thực thể được trích xuất PHẢI xuất hiện trong ít nhất MỘT mối quan hệ (làm source hoặc target). KHÔNG được để thực thể đứng một mình.
+2. Nếu không tìm được quan hệ cho một thực thể → phải đọc lại văn bản để tìm quan hệ ngầm (địa điểm, thời gian, công cụ, mục tiêu, bối cảnh). Nếu vẫn không có, KHÔNG trích xuất thực thể đó.
+3. PHẢI tuân thủ chính xác ontology được cung cấp. KHÔNG tạo loại ngoài ontology. Ưu tiên dùng quan hệ cụ thể (TẤN_CÔNG, SỬ_DỤNG, XẢY_RA_TẠI…); chỉ dùng `LIÊN_QUAN` khi không có lựa chọn nào khác.
+4. Tên thực thể PHẢI ở dạng chính tắc (canonical), giữ dấu tiếng Việt, không viết tắt.
+5. Trước khi trả về, TỰ KIỂM TRA: liệt kê tất cả tên trong `entities` và kiểm tra từng cái có xuất hiện trong `relationships` không. Nếu có thực thể cô lập → bổ sung quan hệ hoặc loại thực thể đó.
+6. Chỉ trả về JSON hợp lệ, không kèm diễn giải, không kèm fenced code blocks.
 
-Chỉ trả về JSON hợp lệ (không kèm diễn giải, không kèm fenced code blocks). Trường `name` PHẢI là dạng chính tắc (canonical) — tên chuẩn, không viết tắt.
+VÍ DỤ (few-shot):
 
-Ví dụ định dạng JSON trả về:
-
+Input: "Nga sử dụng máy bay Su-34 để tấn công Kyiv trong cuộc chiến Ukraine năm 2022."
+Output:
 ```json
 {
     "entities": [
-        {
-            "name": "Ví dụ: Hoa Kỳ",
-            "type": "Quốc_gia",
-            "attributes": {"khu_vực": "Bắc Mỹ", "mã_quốc_gia": "US"}
-        }
+        {"name": "Nga", "type": "Quốc_gia", "attributes": {}},
+        {"name": "Su-34", "type": "Vũ_khí", "attributes": {"loại": "máy bay"}},
+        {"name": "Kyiv", "type": "Địa_điểm", "attributes": {}},
+        {"name": "Cuộc chiến Ukraine", "type": "Sự_kiện", "attributes": {}},
+        {"name": "2022", "type": "Thời_gian", "attributes": {}}
     ],
     "relationships": [
-        {
-            "source": "Hoa Kỳ",
-            "source_type": "Quốc_gia",
-            "target": "Phòng thí nghiệm X",
-            "target_type": "Tổ_chức",
-            "type": "MUA_SẮM",
-            "fact": "Mua công nghệ Y vào năm 2022"
-        }
+        {"source": "Nga", "source_type": "Quốc_gia", "target": "Su-34", "target_type": "Vũ_khí", "type": "SỬ_DỤNG", "fact": "Nga sử dụng Su-34"},
+        {"source": "Su-34", "source_type": "Vũ_khí", "target": "Kyiv", "target_type": "Địa_điểm", "type": "TẤN_CÔNG", "fact": "Su-34 tấn công Kyiv"},
+        {"source": "Nga", "source_type": "Quốc_gia", "target": "Cuộc chiến Ukraine", "target_type": "Sự_kiện", "type": "THAM_GIA", "fact": "Nga tham gia cuộc chiến"},
+        {"source": "Cuộc chiến Ukraine", "source_type": "Sự_kiện", "target": "2022", "target_type": "Thời_gian", "type": "XẢY_RA_VÀO", "fact": "Diễn ra năm 2022"}
     ]
 }
 ```
+Lưu ý: Mọi thực thể (Nga, Su-34, Kyiv, Cuộc chiến Ukraine, 2022) đều xuất hiện ít nhất 1 lần trong relationships → KHÔNG có node cô lập.
 
-Ghi nhớ:
-- Chỉ dùng các `Entity` và `Relationship` trong ontology được cung cấp.
-- Tên thực thể phải ở dạng chính tắc (ví dụ: sử dụng "Hoa Kỳ" thay vì "Mỹ" nếu chuẩn hóa như vậy).
-- Nếu không có thực thể hay mối quan hệ phù hợp, trả mảng rỗng tương ứng.
+Nếu không có thực thể hay mối quan hệ phù hợp, trả mảng rỗng tương ứng.
 """
 
 # ── Ontology ──
 ONTOLOGY_DESC = """\
-Loại thực thể (CHỈ DÙNG NHỮNG LOẠI NÀY):
+Loại thực thể (CHᢀ DÙNG NHỮNG LOẠI NÀY):
     - Cá_nhân: Cá nhân attrs=[vai_trò, quốc_tịch, chức_danh]
     - Quốc_gia: Quốc gia attrs=[khu_vực, mã_quốc_gia]
     - Tổ_chức: Công ty, cơ quan, tổ chức attrs=[loại_hình, quốc_gia, lĩnh_vực]
@@ -124,15 +139,23 @@ Loại thực thể (CHỈ DÙNG NHỮNG LOẠI NÀY):
     - Địa_điểm: Địa điểm (thành phố, cơ sở, cơ quan) attrs=[loại_hình, tọa_độ]
     - Vũ_khí: Vũ khí/đạn dược attrs=[loại, cỡ_nòng, tầm_bắn]
     - Công_nghệ: Hệ thống/công nghệ attrs=[loại, danh_mục, trạng_thái]
+    - Thời_gian: Năm, ngày, khoảng thời gian attrs=[định_dạng]
 
-Loại mối quan hệ (CHỈ DÙNG NHỮNG LOẠI NÀY — nếu không phân loại được, dùng `LIÊN_QUAN`):
-    - THAM_GIA: Tham gia vào sự kiện (Cá_nhân→Sự_kiện, Tổ_chức→Sự_kiện)
+Loại mối quan hệ (CHᢀ DÙNG NHỮNG LOẠI NÀY — ưu tiên quan hệ cụ thể, chỉ dùng `LIÊN_QUAN` khi không còn lựa chọn nào):
+    - THAM_GIA: Tham gia vào sự kiện (Cá_nhân→Sự_kiện, Tổ_chức→Sự_kiện, Quốc_gia→Sự_kiện)
     - NHẮC_ĐẾN: Tài liệu/đoạn văn đề cập đến thực thể (Document→Entity)
     - HOẠT_ĐỘNG_TẠI: Hoạt động tại địa điểm/quốc gia (Tổ_chức→Địa_điểm, Cá_nhân→Quốc_gia)
     - TƯƠNG_TÁC_VỚI: Tương tác giữa các thực thể (Cá_nhân↔Tổ_chức, Quốc_gia↔Quốc_gia)
     - NẰM_TẠI: Thuộc vị trí (Tổ_chức→Địa_điểm, Địa_điểm→Quốc_gia)
-    - PHÁT_TRIỂN: Phát triển công nghệ/vũ_khí (Tổ_chức→Công_nghệ)
+    - PHÁT_TRIỂN: Phát triển công nghệ/vũ khí (Tổ_chức→Công_nghệ, Quốc_gia→Vũ_khí)
     - MUA_SẮM: Mua bán/thu mua (Quốc_gia→Vũ_khí, Tổ_chức→Công_nghệ)
+    - SỬ_DỤNG: Sử dụng công cụ/vũ khí (Cá_nhân→Vũ_khí, Quốc_gia→Vũ_khí, Tổ_chức→Công_nghệ)
+    - TẤN_CÔNG: Chủ thể / vũ khí tấn công mục tiêu (Quốc_gia→Địa_điểm, Vũ_khí→Địa_điểm, Tổ_chức→Tổ_chức)
+    - MỤC_TIÊU_TẠI: Vũ khí/hành động nhắm đến địa điểm (Vũ_khí→Địa_điểm, Sự_kiện→Địa_điểm)
+    - XẢY_RA_TẠI: Sự kiện diễn ra tại địa điểm (Sự_kiện→Địa_điểm, Sự_kiện→Quốc_gia)
+    - XẢY_RA_VÀO: Sự kiện diễn ra vào thời gian (Sự_kiện→Thời_gian)
+    - THUỘC_VỀ: Quan hệ bộ phận / tổng thể (Địa_điểm→Quốc_gia, Tổ_chức→Quốc_gia)
+    - SỞ_HỮU: Quyền sở hữu (Quốc_gia→Vũ_khí, Tổ_chức→Công_nghệ)
 """
 
 # File-level retry cap for marking FAILED
@@ -323,8 +346,8 @@ def _validate_extracted(extracted: dict[str, Any]) -> dict[str, Any]:
     raw_entities = extracted.get("entities", []) or []
     raw_relationships = extracted.get("relationships", []) or []
 
-    valid_entities: List[Dict[str, Any]] = []
-    valid_relationships: List[Dict[str, Any]] = []
+    valid_entities: list[dict[str, Any]] = []
+    valid_relationships: list[dict[str, Any]] = []
 
     # Validate entities individually
     for i, ent in enumerate(raw_entities):
@@ -346,6 +369,136 @@ def _validate_extracted(extracted: dict[str, Any]) -> dict[str, Any]:
         "entities": valid_entities,
         "relationships": valid_relationships,
     }
+
+
+# ---------------------------------------------------------------------------
+# Orphan detection & repair
+# ---------------------------------------------------------------------------
+
+
+def _find_orphan_entities(extracted: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return entities that don't appear in any relationship (as source or target).
+
+    Document-level NHẮC_ĐẾN edges are added later by `_upsert_nodes_edges` and
+    are NOT considered semantic relationships here.
+    """
+    entities = extracted.get("entities", []) or []
+    relationships = extracted.get("relationships", []) or []
+
+    connected: set[str] = set()
+    for rel in relationships:
+        src = (rel.get("source") or "").strip()
+        tgt = (rel.get("target") or "").strip()
+        if src:
+            connected.add(src)
+        if tgt:
+            connected.add(tgt)
+
+    return [
+        e for e in entities
+        if (e.get("name") or "").strip() and (e.get("name") or "").strip() not in connected
+    ]
+
+
+REPAIR_USER_PROMPT = """\
+Trong văn bản dưới đây, các thực thể sau bị bỏ sót — chưa có quan hệ nào kết nối chúng với phần còn lại của đồ thị:
+
+ORPHANS:
+{orphans}
+
+CÁC THỰC THỂ ĐÃ CÓ (để bạn nối với orphan):
+{others}
+
+NHIỆM VỤ: Đọc lại văn bản. VỚI MỖI orphan, tìm ÍT NHẤT MỘT quan hệ nối nó với một thực thể có sẵn (hoặc với orphan khác). Ưu tiên dùng quan hệ cụ thể (TẤN_CÔNG, SỬ_DỤNG, XẢY_RA_TẠI, XẢY_RA_VÀO, MỤC_TIÊU_TẠI, THUỘC_VỀ…). Chỉ dùng `LIÊN_QUAN` khi thực sự không còn lựa chọn nào.
+
+Nếu một orphan hoàn toàn không thể kết nối → bỏ qua orphan đó (không bắt buộc).
+
+CHỈ trả về JSON với trường `relationships` (mảng các quan hệ BỔ SUNG). KHÔNG lặp lại quan hệ đã có.
+
+VĂN BẢN:
+{chunk}
+Định dạng:
+{{"relationships": [{{"source": "...", "source_type": "...", "target": "...", "target_type": "...", "type": "...", "fact": "..."}}]}}
+"""
+
+
+async def _repair_orphans(
+    http_client: httpx.AsyncClient,
+    chunk: str,
+    extracted: dict[str, Any],
+) -> dict[str, Any]:
+    """Ask LLM to add relationships that connect orphan entities to the graph.
+
+    Mutates and returns `extracted`. Best-effort: failures are swallowed.
+    """
+    orphans = _find_orphan_entities(extracted)
+    if not orphans:
+        return extracted
+
+    orphan_names = [o.get("name") for o in orphans if o.get("name")]
+    other_entities = [
+        {"name": e.get("name"), "type": e.get("type")}
+        for e in extracted.get("entities", [])
+        if e.get("name") not in set(orphan_names)
+    ]
+
+    user_msg = REPAIR_USER_PROMPT.format(
+        orphans=json.dumps(orphan_names, ensure_ascii=False, indent=2),
+        others=json.dumps(other_entities, ensure_ascii=False, indent=2),
+        chunk=chunk,
+    )
+
+    try:
+        repair_resp = await _llm_chat_json_with_retry(
+            http_client,
+            messages=[
+                {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": f"## Ontology\n{ONTOLOGY_DESC}\n\n{user_msg}"},
+            ],
+            temperature=0.1,
+            max_tokens=2048,
+        )
+    except Exception as exc:
+        logger.warning("Orphan repair LLM call failed: %s", exc)
+        return extracted
+
+    if not isinstance(repair_resp, dict):
+        return extracted
+
+    new_rels = repair_resp.get("relationships", []) or []
+    if not new_rels:
+        return extracted
+
+    # Validate new relationships through the same pydantic schema
+    validated = _validate_extracted({"entities": [], "relationships": new_rels})
+    added = validated.get("relationships", [])
+    if added:
+        logger.info(
+            "Orphan repair added %d relationships for %d orphan entities",
+            len(added),
+            len(orphan_names),
+        )
+        extracted["relationships"] = list(extracted.get("relationships", [])) + added
+
+    return extracted
+
+
+def _drop_orphan_entities(extracted: dict[str, Any]) -> dict[str, Any]:
+    """Drop entities that still have no relationship after repair."""
+    orphans = _find_orphan_entities(extracted)
+    if not orphans:
+        return extracted
+    orphan_keys = {(o.get("name"), o.get("type")) for o in orphans}
+    logger.info(
+        "Dropping %d orphan entities (no semantic relationship): %s",
+        len(orphans),
+        [o.get("name") for o in orphans],
+    )
+    extracted["entities"] = [
+        e for e in extracted.get("entities", [])
+        if (e.get("name"), e.get("type")) not in orphan_keys
+    ]
+    return extracted
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +817,28 @@ async def _extract_chunk(
             extracted_raw.setdefault("entities", [])
             extracted_raw.setdefault("relationships", [])
             validated = _validate_extracted(extracted_raw)
+
+            # Orphan repair: ask the LLM to find connections for entities that
+            # don't appear in any relationship. This prevents standalone nodes
+            # like "Baghdad" being mentioned with no relation to the rest of
+            # the graph.
+            orphans_before = _find_orphan_entities(validated)
+            if orphans_before and ENABLE_ORPHAN_REPAIR:
+                logger.info(
+                    "Chunk %d/%d (file %d): %d orphan entities found, attempting repair",
+                    chunk_idx + 1,
+                    total_chunks,
+                    file_id,
+                    len(orphans_before),
+                )
+                validated = await _repair_orphans(http_client, chunk, validated)
+                # Re-validate any new relationships were added by repair
+                validated = _validate_extracted(validated)
+
+            # Drop entities that still have no relationship after repair
+            if DROP_ORPHAN_ENTITIES:
+                validated = _drop_orphan_entities(validated)
+
             return validated
         except Exception:
             logger.exception(
