@@ -72,6 +72,7 @@ VALID_EDGE_TYPES = frozenset(
         "NẰM_TẠI",
         "PHÁT_TRIỂN",
         "MUA_SẮM",
+        "LIÊN_QUAN",
     }
 )
 
@@ -79,7 +80,7 @@ VALID_EDGE_TYPES = frozenset(
 EXTRACTION_SYSTEM_PROMPT = """\
 Bạn là một extractor để trích xuất thực thể và mối quan hệ cho đồ thị tri thức. Cho một đoạn văn bản (chunk) và định nghĩa ontology RÕ RÀNG bằng tiếng Việt, hãy trích xuất TẤT CẢ thực thể và mối quan hệ có trong đoạn văn.
 
-PHẢI tuân thủ chính xác ontology được cung cấp. KHÔNG tạo loại thực thể hay loại mối quan hệ ngoài ontology. Nếu một mối quan hệ không khớp bất kỳ loại nào, hãy ghi `RELATED_TO` để giữ tính kết nối.
+    PHẢI tuân thủ chính xác ontology được cung cấp. KHÔNG tạo loại thực thể hay loại mối quan hệ ngoài ontology. Nếu một mối quan hệ không khớp bất kỳ loại nào, hãy ghi `LIÊN_QUAN` để giữ tính kết nối.
 
 Chỉ trả về JSON hợp lệ (không kèm diễn giải, không kèm fenced code blocks). Trường `name` PHẢI là dạng chính tắc (canonical) — tên chuẩn, không viết tắt.
 
@@ -124,7 +125,7 @@ Loại thực thể (CHỈ DÙNG NHỮNG LOẠI NÀY):
     - Vũ_khí: Vũ khí/đạn dược attrs=[loại, cỡ_nòng, tầm_bắn]
     - Công_nghệ: Hệ thống/công nghệ attrs=[loại, danh_mục, trạng_thái]
 
-Loại mối quan hệ (CHỈ DÙNG NHỮNG LOẠI NÀY — nếu không phân loại được, dùng `RELATED_TO`):
+Loại mối quan hệ (CHỈ DÙNG NHỮNG LOẠI NÀY — nếu không phân loại được, dùng `LIÊN_QUAN`):
     - THAM_GIA: Tham gia vào sự kiện (Cá_nhân→Sự_kiện, Tổ_chức→Sự_kiện)
     - NHẮC_ĐẾN: Tài liệu/đoạn văn đề cập đến thực thể (Document→Entity)
     - HOẠT_ĐỘNG_TẠI: Hoạt động tại địa điểm/quốc gia (Tổ_chức→Địa_điểm, Cá_nhân→Quốc_gia)
@@ -300,8 +301,8 @@ class RelationshipSchema(BaseModel):
     def edge_type_or_fallback(cls, v: str) -> str:
         vt = (v or "").strip()
         if vt not in VALID_EDGE_TYPES:
-            logger.warning("Mapping edge type %r to RELATED_TO", vt)
-            return "RELATED_TO"
+            logger.warning("Mapping edge type %r to LIÊN_QUAN", vt)
+            return "LIÊN_QUAN"
         return vt
 
 
@@ -510,6 +511,42 @@ async def _upsert_nodes_edges(
                 "attributes": attrs,
             }
 
+    # build nodes from relationships (in case they weren't in entities list)
+    # just create if one of source/target types matches a known entity type; otherwise skip
+    # for eg:
+    # - valid_node - valid_or_invalid_relationshiop - valid_node
+    # - valid_node - valid_or_invalid_relationship - invalid_node
+    for rel in extracted.get("relationships", []):
+        src_name = rel.get("source") or ""
+        src_type = rel.get("source_type") or ""
+        tgt_name = rel.get("target") or ""
+        tgt_type = rel.get("target_type") or ""
+
+        # if one of source/target is valid type,
+        # we create nodes for both (even if the other type is invalid) to preserve connectivity in the graph;
+        # the invalid type will just be stored as-is and can be cleaned up later
+        if src_type in VALID_ENTITY_TYPES or tgt_type in VALID_ENTITY_TYPES:
+
+            if src_name and src_type:
+                key = (src_name, src_type)
+                if key not in nodes_by_key:
+                    nodes_by_key[key] = {
+                        "id": uuid.uuid4(),
+                        "name": src_name,
+                        "entity_type": src_type,
+                        "attributes": {},
+                    }
+
+            if tgt_name and tgt_type:
+                key = (tgt_name, tgt_type)
+                if key not in nodes_by_key:
+                    nodes_by_key[key] = {
+                        "id": uuid.uuid4(),
+                        "name": tgt_name,
+                        "entity_type": tgt_type,
+                        "attributes": {},
+                    }
+
     node_values = list(nodes_by_key.values())
 
     id_map: dict[tuple[str, str], Any] = {}
@@ -542,7 +579,7 @@ async def _upsert_nodes_edges(
                 "id": uuid.uuid4(),
                 "source_node_id": src_id,
                 "target_node_id": tgt_id,
-                "edge_type": (rel.get("type") or "RELATED_TO"),
+                        "edge_type": (rel.get("type") or "LIÊN_QUAN"),
                 "fact": rel.get("fact") or "",
                 "attributes": rel.get("attributes") or {},
             }
