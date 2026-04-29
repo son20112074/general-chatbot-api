@@ -64,10 +64,8 @@ async def get_first_messages(
     # Apply pagination
     offset = (page - 1) * page_size
     stmt = stmt.offset(offset).limit(page_size)
-
     result = await db.execute(stmt)
     rows = result.mappings().all()
-
     return [
         FirstMessageResponse(
             session_id=row["session_id"],

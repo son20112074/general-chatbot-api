@@ -7,7 +7,7 @@ and automatically detects file types for parsing.
 
 import requests
 from pathlib import Path
-from typing import Dict, Any, Union
+from typing import Dict, Any, Optional, Union
 import logging
 
 from .config import get_base_url, get_timeout
@@ -22,6 +22,21 @@ from .summary_service import SummaryService
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_file_extension(extension: Optional[str], file_path: Union[str, Path]) -> str:
+    """
+    Return a lowercase extension with a leading dot (e.g. '.docx').
+    DB fields sometimes store 'docx' without the dot; Path.suffix is then unreliable on temp files.
+    """
+    file_path = Path(file_path)
+    ext = (extension or "").strip()
+    if not ext:
+        return file_path.suffix.lower()
+    ext = ext.lower()
+    if not ext.startswith("."):
+        ext = "." + ext
+    return ext
 
 
 class FileParser:
@@ -130,7 +145,7 @@ class FileParser:
             Dictionary containing the parsed file information
         """
         file_path = Path(file_path)
-        file_extension = extension if extension else file_path.suffix.lower()
+        file_extension = normalize_file_extension(extension, file_path)
         
         # Text file types (simple UTF-8 reading)
         if file_extension in ['.txt', '.dat', '.csv']:

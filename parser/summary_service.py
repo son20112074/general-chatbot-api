@@ -14,14 +14,62 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _chat_completions_url(base_url: str) -> str:
+    """Build OpenAI-style chat completions URL from a base like https://api.openai.com/v1."""
+    base = (base_url or "").rstrip("/")
+    if not base:
+        base = settings.LLM_API.rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    return f"{base}/chat/completions"
+
+
+def _openai_stream_text(response: requests.Response) -> tuple[str, Optional[dict]]:
+    """
+    Parse OpenAI-compatible SSE stream (chat.completions with stream=true).
+    Returns (accumulated assistant text, last JSON object seen or None).
+    """
+    text_parts: list[str] = []
+    last_obj: Optional[dict] = None
+    for line in response.iter_lines(decode_unicode=True):
+        if not line:
+            continue
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data_str = line[5:].strip()
+        if data_str == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data_str)
+        except json.JSONDecodeError:
+            logger.warning("Skipping non-JSON SSE line: %s...", line[:120])
+            continue
+        last_obj = chunk
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+        delta = choices[0].get("delta") or {}
+        piece = delta.get("content")
+        if piece:
+            text_parts.append(piece)
+    return "".join(text_parts), last_obj
+
+
 class SummaryService:
     """Service for summarizing extracted content using AI API."""
     
-    def __init__(self, api_url: str = ""):
-        self.api_url = api_url
-        # print(f"SummaryService initialized with api_url: {self.api_url}")
-        self.model = "gpt-oss:20b"
+    def __init__(self, api_url: str = "", api_key: Optional[str] = None):
+        self.api_url = api_url or settings.LLM_API
+        self.api_key = api_key if api_key is not None else settings.OPENAI_API_KEY
+        self.model = settings.LLM_MODEL
         self.session = requests.Session()
+
+    def _openai_headers(self) -> Dict[str, str]:
+        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
     
     def summarize_content(self, content: str, file_type: str = "unknown", max_length: int = 500) -> Dict[str, Any]:
         """
@@ -170,75 +218,54 @@ class SummaryService:
                     - Separate each paragraph by a new line.
             """
 
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": f"Please summarize this {file_type} content:\n\n{content}",
+                },
+            ]
             payload = {
                 "model": self.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": system_prompt
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Please summarize this {file_type} content:\n\n{content}"
-                    }
-                ],
-                "stream": True
+                "messages": messages,
+                "stream": True,
             }
+            url = _chat_completions_url(self.api_url)
 
-            logger.info(f"Requesting streaming summary for {file_type} content (length: {len(content)})")
+            logger.info(
+                f"Requesting OpenAI streaming chat completion for {file_type} content (length: {len(content)})"
+            )
             response = self.session.post(
-                self.api_url,
-                headers={'Content-Type': 'application/json'},
+                url,
+                headers=self._openai_headers(),
                 json=payload,
                 timeout=120,
-                stream=True
+                stream=True,
             )
 
             if response.status_code == 200:
-                summary = ""
-                metadata = {}
-                last_response = None
-
                 try:
-                    for line in response.iter_lines(decode_unicode=True):
-                        if line.strip():
-                            try:
-                                chunk_data = json.loads(line)
-
-                                if chunk_data.get("message") and chunk_data["message"].get("content"):
-                                    chunk_content = chunk_data["message"]["content"]
-                                    summary += chunk_content
-
-                                if chunk_data.get("done", False):
-                                    last_response = chunk_data
-                                    metadata = {
-                                        "model": chunk_data.get("model"),
-                                        "created_at": chunk_data.get("created_at"),
-                                        "total_duration": chunk_data.get("total_duration"),
-                                        "done_reason": chunk_data.get("done_reason"),
-                                        "done": chunk_data.get("done"),
-                                        "prompt_eval_count": chunk_data.get("prompt_eval_count"),
-                                        "eval_count": chunk_data.get("eval_count"),
-                                        "eval_duration": chunk_data.get("eval_duration")
-                                    }
-                                    break
-
-                            except json.JSONDecodeError as e:
-                                logger.warning(f"Failed to parse streaming chunk: {line[:100]}... Error: {e}")
-                                continue
-
+                    summary, last_response = _openai_stream_text(response)
                 except Exception as e:
-                    logger.error(f"Error processing streaming response: {str(e)}")
+                    logger.error(f"Error processing OpenAI streaming response: {str(e)}")
                     return {
                         "success": False,
                         "error": f"Error processing streaming response: {str(e)}",
-                        "summary": summary,
-                        "api_response": None
+                        "summary": "",
+                        "api_response": None,
                     }
 
                 logger.info(f"✅ Successfully summarized {file_type} content via streaming")
 
                 cleaned_summary = (summary or "").strip()
+                metadata: Dict[str, Any] = {}
+                if last_response:
+                    usage = last_response.get("usage")
+                    metadata = {
+                        "model": last_response.get("model"),
+                        "id": last_response.get("id"),
+                        "usage": usage,
+                    }
 
                 return {
                     "success": True,
@@ -247,7 +274,7 @@ class SummaryService:
                     "metadata": metadata,
                     "original_length": len(content),
                     "summary_length": len(cleaned_summary),
-                    "streaming": True
+                    "streaming": True,
                 }
             else:
                 error_msg = f"API request failed with status {response.status_code}: {response.text}"
@@ -377,57 +404,38 @@ class SummaryService:
                 Luôn trả về định dạng JSON chính xác.
             """
             
-            # Prepare the API request with streaming enabled
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": f"Please extract metadata from this {file_type} content:\n\n{content}",
+                },
+            ]
             payload = {
                 "model": self.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": system_prompt
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Please extract metadata from this {file_type} content:\n\n{content}"
-                    }
-                ],
-                "stream": True  # Enable streaming for JSON response
+                "messages": messages,
+                "stream": True,
             }
-            
-            # Make streaming API request
-            logger.info(f"Requesting streaming metadata extraction for {file_type} content (length: {len(content)})")
+            url = _chat_completions_url(self.api_url)
+
+            logger.info(
+                f"Requesting OpenAI streaming metadata extraction for {file_type} content (length: {len(content)})"
+            )
             response = self.session.post(
-                self.api_url,
-                headers={'Content-Type': 'application/json'},
+                url,
+                headers=self._openai_headers(),
                 json=payload,
-                timeout=120,  # Increased timeout for streaming
-                stream=True  # Enable streaming response
+                timeout=120,
+                stream=True,
             )
             
             if response.status_code == 200:
-                # Process streaming response
                 json_content = ""
                 metadata = {}
                 last_response = None
                 
                 try:
-                    for line in response.iter_lines(decode_unicode=True):
-                        if line.strip():
-                            try:
-                                chunk_data = json.loads(line)
-                                
-                                # Extract content from streaming chunk
-                                if chunk_data.get("message") and chunk_data["message"].get("content"):
-                                    chunk_content = chunk_data["message"]["content"]
-                                    json_content += chunk_content
-                                
-                                # Store metadata from the last chunk
-                                if chunk_data.get("done", False):
-                                    last_response = chunk_data
-                                    break
-                                    
-                            except json.JSONDecodeError as e:
-                                logger.warning(f"Failed to parse streaming chunk: {line[:100]}... Error: {e}")
-                                continue
+                    json_content, last_response = _openai_stream_text(response)
                     
                     logger.info(f"JSON content: {json_content[:200]}...")
 

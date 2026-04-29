@@ -38,7 +38,8 @@ class Settings(BaseSettings):
     # Storage (MinIO)
     STORAGE_PUBLIC_URL: str = "http://localhost:9002"
     STORAGE_BUCKET_NAME: str = "media-bucket"
-
+    STORAGE_DOWNLOAD_URL: str = "http://minio:9000"
+    
     # Content processing limits
     CONTENT_LIMIT: int = 20000  # Maximum content length for API processing
 

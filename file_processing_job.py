@@ -23,7 +23,7 @@ from app.core.database import get_db
 
 from app.domain.models.file import File
 
-from parser.file_parser import FileParser
+from parser.file_parser import FileParser, normalize_file_extension
 from parser.config import get_base_url
 from parser.summary_service import SummaryService
 from app.core.config import settings
@@ -82,22 +82,23 @@ class FileProcessingJob:
             file_url = (
                 str(file.path)
                 if str(file.path).startswith(("http://", "https://"))
-                else f"{settings.STORAGE_PUBLIC_URL.rstrip('/')}/{str(file.path).lstrip('/')}"
+                else f"{settings.STORAGE_DOWNLOAD_URL.rstrip('/')}/{settings.STORAGE_BUCKET_NAME}/{str(file.path).lstrip('/')}"
             )
             logger.info(f"Downloading file from URL: {file_url}")
 
-            file_suffix = file.extension or Path(str(file.path)).suffix
+            # DB may store "docx" without a leading dot; temp file must use ".docx" so Path.suffix matches.
+            normalized_ext = normalize_file_extension(file.extension, str(file.path))
             with requests.get(file_url, stream=True, timeout=60) as response:
                 response.raise_for_status()
-                with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as temp_file:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=normalized_ext) as temp_file:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             temp_file.write(chunk)
                     temp_file_path = temp_file.name
             
             # Parse file using the parser
-            logger.info(f"Parsing file with extension: {file.extension}")
-            result = self.parser.parse_file(temp_file_path, file.extension)
+            logger.info(f"Parsing file with extension: {normalized_ext}")
+            result = self.parser.parse_file(temp_file_path, normalized_ext)
             
             # Check if parsing was successful
             if not result.get('success', True):  # Default to True for backward compatibility
@@ -110,13 +111,13 @@ class FileProcessingJob:
                     raise Exception(f"Parsing failed: {error_msg}")
             
             # Extract content and summary from result
-            content = self._extract_content(result, file.extension)
+            content = self._extract_content(result, normalized_ext)
             # Extract summary - will use AI summary if available, otherwise generate new one
             # Note: summary extraction already uses _extract_content which cleans the content
-            summary = self._extract_summary(result, file.extension)
+            summary = self._extract_summary(result, normalized_ext)
             
             # Extract metadata (countries, technologies, companies, important news)
-            metadata = self._extract_metadata(summary, file.extension)
+            metadata = self._extract_metadata(summary, normalized_ext)
 
             # Log summary generation result
             if summary:

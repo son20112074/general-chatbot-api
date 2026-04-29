@@ -147,7 +147,7 @@ async def _llm_chat_json(
     }
 
     response = await http_client.post(
-        f"{settings.LLM_API}/v1/chat/completions",
+        f"{settings.LLM_API}",
         headers=headers,
         json=payload,
     )
