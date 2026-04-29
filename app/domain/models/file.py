@@ -1,8 +1,21 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, ARRAY, Index
+from enum import Enum as PyEnum
+
+from sqlalchemy import ARRAY, Boolean, Column, DateTime, text
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy import ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import relationship
-from app.core.database import Base
+
 from app.core.config import settings
+from app.core.database import Base
+
+
+class ExtractionState(PyEnum):
+    PENDING = 'pending'
+    PROCESSING = 'processing'
+    FAILED = 'failed'
+    DONE = 'done'
+
 
 class File(Base):
     __tablename__ = "files"
@@ -36,7 +49,24 @@ class File(Base):
 
     is_embedded = Column(Boolean, default=None, nullable=True)
     is_deleted = Column(Boolean, default=False, nullable=True)
-    is_graph_extracted = Column(Boolean, default=False, nullable=False, server_default="false")
+
+    extraction_state = Column(
+        SAEnum(
+            ExtractionState,
+            native_enum=False,
+            length=20,
+            values_callable=lambda e: [m.value for m in e],
+        ),
+        default=ExtractionState.PENDING,
+        nullable=False,
+        server_default="'pending'",
+    )
+
+    extraction_attempts = Column(Integer, default=0, nullable=False, server_default='0')
+
+    # Topic classification
+    is_topic_classified = Column(Boolean, default=None, nullable=True)
+    topic_classify_retries = Column(Integer, nullable=True, server_default='0')
 
     # Classification fields
     listed_nation = Column(ARRAY(String), nullable=True)
@@ -83,9 +113,17 @@ class File(Base):
             "summary": self.summary,
             "is_embedded": self.is_embedded,
             "is_deleted": self.is_deleted,
+            "extraction_state": (
+                getattr(self, "extraction_state", None).value
+                if getattr(self, "extraction_state", None) is not None and hasattr(getattr(self, "extraction_state", None), "value")
+                else getattr(self, "extraction_state", None)
+            ),
+            "extraction_attempts": getattr(self, "extraction_attempts", 0),
             "listed_nation": self.listed_nation,
             "important_news": self.important_news,
             "listed_technology": self.listed_technology,
             "listed_company": self.listed_company,
             "listed_timeline": self.listed_timeline,
+            "is_topic_classified": self.is_topic_classified,
+            "topic_classify_retries": getattr(self, "topic_classify_retries", 0),
         }

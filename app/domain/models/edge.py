@@ -20,8 +20,6 @@ class Edge(Base):
     fact = Column(Text, nullable=True)
     attributes = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=True, default=datetime.utcnow)
-    file_id = Column(Integer, ForeignKey(f'{settings.DB_SCHEMA}.files.id', ondelete='SET NULL'), nullable=True, index=True)
 
     source_node = relationship("Node", foreign_keys=[source_node_id])
     target_node = relationship("Node", foreign_keys=[target_node_id])
-    file = relationship("File", foreign_keys=[file_id])

@@ -1,14 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Body
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, text as sa_text
+from sqlalchemy import select, and_, or_
 from app.core.config import settings
 from app.core.database import Base, get_db
 from app.core.file_service import FileService
 from app.core.query import CursorPaginationResult, QueryInput
 from app.domain.services.file_service import FileQueryService
 from app.domain.models.file import File as FileModel
-from app.domain.models.folder import Folder as FolderModel
-from app.domain.models.role import Role as RoleModel
 from app.domain.models.user import User
 from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.auth import TokenData
@@ -19,10 +17,10 @@ from app.presentation.api.v1.schemas.file import (
     FileUpdateSchema, FileMoveSchema, FileListAllSchema,
 )
 from app.utils.table_lookup import get_table_with_schema
-from app.utils.helpers import check_file_permission, compute_and_set_node_path, build_file_item
+from app.utils.helpers import check_file_permission, compute_and_set_node_path, build_file_item, parse_datetime_safe
 from typing import List, Optional
 from datetime import datetime
-from dateutil import parser as date_parser
+
 import os
 from pathlib import Path
 import docx
@@ -106,7 +104,6 @@ def parse_datetime_safe(datetime_str: str) -> datetime:
 
 
 # ── Endpoints ────────────────────────────────────────────────
-
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -139,7 +136,6 @@ async def upload_file(
             detail=f"Error uploading file: {str(e)}"
         ) 
         
-
 @router.post("/my-files", response_model=CursorPaginationResult)
 async def query_with_cursor(
     query_input: QueryInput,
@@ -218,7 +214,6 @@ async def query_files_with_children(
             detail=f"Error executing query: {str(e)}"
         )
 
-
 # File content extraction functions
 def extract_docx_content(file_path: str) -> str:
     """Trích xuất nội dung từ file DOCX"""
@@ -245,7 +240,6 @@ def extract_docx_content(file_path: str) -> str:
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file DOCX: {str(e)}")
 
-
 def extract_doc_content(file_path: str) -> str:
     """Trích xuất nội dung từ file DOC (cần python-docx2txt hoặc antiword)"""
     try:
@@ -258,7 +252,6 @@ def extract_doc_content(file_path: str) -> str:
             return "Cần cài đặt thư viện docx2txt để đọc file DOC"
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file DOC: {str(e)}")
-
 
 def extract_xlsx_content(file_path: str) -> str:
     """Trích xuất nội dung từ file XLSX"""
@@ -280,7 +273,6 @@ def extract_xlsx_content(file_path: str) -> str:
         return "\n".join(content)
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file XLSX: {str(e)}")
-
 
 def extract_text_content(file_path: str) -> str:
     """Trích xuất nội dung từ file TXT hoặc DAT"""
@@ -305,7 +297,6 @@ def extract_text_content(file_path: str) -> str:
             
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file text: {str(e)}")
-
 
 def extract_csv_content(file_path: str) -> str:
     """Trích xuất nội dung từ file CSV"""
@@ -344,7 +335,6 @@ def extract_csv_content(file_path: str) -> str:
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file CSV: {str(e)}")
 
-
 def extract_pdf_content(file_path: str) -> str:
     """Trích xuất nội dung từ file PDF bằng PDFParser hiện có."""
     try:
@@ -355,7 +345,6 @@ def extract_pdf_content(file_path: str) -> str:
         return result.get("content", "")
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file PDF: {str(e)}")
-
 
 @router.post("/extract-file-content", response_model=ExtractFileContentResponse)
 async def extract_file_content(
@@ -428,7 +417,6 @@ async def extract_file_content(
             status_code=500,
             detail=f"Lỗi khi trích xuất nội dung file: {str(e)}"
         )
-
 
 @router.get("/dashboard", response_model=FileDashboardResponse)
 async def get_file_dashboard(
@@ -549,13 +537,12 @@ async def get_file_dashboard(
             detail=f"Lỗi khi lấy thống kê dashboard: {str(e)}"
         )
 
-
 @router.post("/period-stats", response_model=PeriodStatsResponse)
 async def get_period_statistics(
     request: PeriodStatsRequest,
     current_user: TokenData = Depends(get_current_user),
     session: AsyncSession = Depends(get_db)
-):
+): 
     """
     API để lấy thống kê file theo kỳ (ngày, tháng, quý, năm)
     
@@ -731,7 +718,6 @@ async def get_period_statistics(
             detail=f"Lỗi khi lấy thống kê theo kỳ: {str(e)}"
         )
 
-
 @router.post("/country-tech-stats", response_model=CountryTechStatsResponse)
 async def get_country_technology_statistics(
     request: CountryTechStatsRequest,
@@ -903,8 +889,6 @@ async def get_country_technology_statistics(
             detail=f"Lỗi khi lấy thống kê quốc gia và công nghệ: {str(e)}"
         )
 
-
-
 @router.get("/detail/{file_id}",
             summary="Get file detail",
             description="Get full file detail by ID including all metadata, content, classification, owner info, and node_path.")
@@ -924,7 +908,6 @@ async def get_file_detail(
     data = row[0].to_dict()
     data["owner"] = {"id": row.u_id, "full_name": row.u_name} if row.u_id else None
     return data
-
 
 @router.put("/update/{file_id}",
             summary="Update file name",
@@ -951,7 +934,6 @@ async def update_file(
     await session.refresh(file_obj)
     return file_obj.to_dict()
 
-
 @router.delete("/delete/{file_id}", status_code=204,
                summary="Soft delete a file",
                description="Only the creator or admin (role_id=1) can delete.")
@@ -972,7 +954,6 @@ async def delete_file(
         raise HTTPException(status_code=403, detail=str(e))
     file_obj.is_deleted = True
     await session.commit()
-
 
 @router.put("/move/{file_id}",
             summary="Move file to another folder",
@@ -998,7 +979,6 @@ async def move_file(
     await session.commit()
     await session.refresh(file_obj)
     return file_obj.to_dict()
-
 
 @router.post("/list-all",
              summary="Get all accessible files (flat list)",
@@ -1038,151 +1018,15 @@ Fields: `created_at` (default), `size`. Direction: `desc` (default), `asc`.
 async def list_all_files(
     query_params: FileListAllSchema,
     current_user: TokenData = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
+    service = FileQueryService(db)
     try:
-        user_id = current_user.user_id
-        user_role_id = current_user.role_id
-
-        # ── Per-type visibility ──────────────────────────────────
-        # - organization: files at own role + subordinate roles (by role
-        #   hierarchy). Uses file.role_id — NOT file.created_by — so
-        #   historical files left behind by transferred users stay visible.
-        # - private:      only creator
-        # - general:      everyone (no owner filter)
-        # - admin:        sees everything regardless of type
-        if user_role_id == ADMIN_ROLE_ID:
-            visibility_filter = []
-        else:
-            # Resolve subordinate role ids
-            child_roles_result = await session.execute(sa_text("""
-                SELECT id FROM roles
-                WHERE (parent_path ILIKE :exact_path
-                OR parent_path ILIKE :anywhere_path)
-                AND is_deleted = false
-            """), {
-                "exact_path": f",{user_role_id},",
-                "anywhere_path": f"%,{user_role_id},%",
-            })
-            child_role_ids = [row[0] for row in child_roles_result.fetchall()]
-            allowed_role_ids = [user_role_id] + child_role_ids
-
-            visibility_filter = [
-                or_(
-                    # general — visible to everyone
-                    FileModel.type == "general",
-                    # private — only creator
-                    and_(
-                        FileModel.type == "private",
-                        FileModel.created_by == user_id,
-                    ),
-                    # organization at own role — same-role isolation:
-                    # only files created by self (peers hidden)
-                    and_(
-                        FileModel.type == "organization",
-                        FileModel.role_id == user_role_id,
-                        FileModel.created_by == user_id,
-                    ),
-                    # organization at subordinate roles — see all files
-                    and_(
-                        FileModel.type == "organization",
-                        FileModel.role_id.in_(child_role_ids),
-                    ) if child_role_ids else and_(False),
-                )
-            ]
-
-        base_cond = and_(
-            or_(FileModel.is_deleted == False, FileModel.is_deleted == None),
-            *visibility_filter,
-        )
-
-        # Single query builder joined with User/Folder/Role so we can
-        # filter and search across all of them in one pass. Reused for
-        # both the page query and the count query to keep filters in sync.
-        def _base():
-            return (
-                select(FileModel, User.id.label("u_id"), User.full_name.label("u_name"))
-                .outerjoin(User, FileModel.created_by == User.id)
-                .outerjoin(FolderModel, FileModel.folder_id == FolderModel.id)
-                .outerjoin(RoleModel, FileModel.role_id == RoleModel.id)
-                .where(base_cond)
-            )
-
-        def _count_base():
-            return (
-                select(func.count(FileModel.id))
-                .select_from(FileModel)
-                .outerjoin(User, FileModel.created_by == User.id)
-                .outerjoin(FolderModel, FileModel.folder_id == FolderModel.id)
-                .outerjoin(RoleModel, FileModel.role_id == RoleModel.id)
-                .where(base_cond)
-            )
-
-        query = _base()
-        count_query = _count_base()
-
-        # ── Subtree filter via node_path ─────────────────────────
-        # node_path format: "type_<type>/role_<id>/.../user_<id>/folder_<id>/..."
-        # To match a segment like `folder_4`, append "/" to node_path and
-        # look for "/folder_4/" — this catches both tail and middle cases.
-        if query_params.started_node is not None and query_params.type_node:
-            segment = f"{query_params.type_node}_{query_params.started_node}"
-            pattern = f"%/{segment}/%"
-            node_match = func.concat(FileModel.node_path, "/").ilike(pattern)
-            query = query.where(node_match)
-            count_query = count_query.where(node_match)
-
-        # ── type filter ──────────────────────────────────────────
-        if query_params.type:
-            query = query.where(FileModel.type == query_params.type)
-            count_query = count_query.where(FileModel.type == query_params.type)
-
-        # ── owner_name filter ────────────────────────────────────
-        if query_params.owner_name:
-            owner_cond = User.full_name.ilike(f"%{query_params.owner_name}%")
-            query = query.where(owner_cond)
-            count_query = count_query.where(owner_cond)
-
-        # ── Free-text search across file/folder/owner/role names ──
-        if query_params.search_text:
-            like = f"%{query_params.search_text}%"
-            search_cond = or_(
-                FileModel.name.ilike(like),
-                FolderModel.name.ilike(like),
-                User.full_name.ilike(like),
-                RoleModel.name.ilike(like),
-            )
-            query = query.where(search_cond)
-            count_query = count_query.where(search_cond)
-
-        # ── is_processed filter ──────────────────────────────────
-        if query_params.is_processed is not None:
-            proc_cond = FileModel.is_processed == query_params.is_processed
-            query = query.where(proc_cond)
-            count_query = count_query.where(proc_cond)
-
-        # ── Sort (supports multiple fields: "size,created_at") ──
-        sort_field_map = {
-            "created_at": FileModel.created_at,
-            "size": FileModel.size,
+        result = await service.query_files(query_params, current_user.user_id, current_user.role_id)
+        return {
+            "data": result["data"],
+            "total": result["total"],
         }
-        sort_fields = [s.strip() for s in (query_params.sort_by or "created_at").split(",")]
-        sort_orders = [s.strip() for s in (query_params.sort_order or "desc").split(",")]
-        order_clauses = []
-        for i, field_name in enumerate(sort_fields):
-            col = sort_field_map.get(field_name, FileModel.created_at)
-            direction = sort_orders[i] if i < len(sort_orders) else sort_orders[-1]
-            order_clauses.append(col.asc() if direction == "asc" else col.desc())
-
-        total = (await session.execute(count_query)).scalar_one()
-        offset = (query_params.page - 1) * query_params.page_size
-        query = query.order_by(*order_clauses).offset(offset).limit(query_params.page_size)
-
-        items = [
-            build_file_item(row[0], row.u_id, row.u_name)
-            for row in (await session.execute(query)).all()
-        ]
-        return {"data": items, "total": total, "message": "succeeded"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
 

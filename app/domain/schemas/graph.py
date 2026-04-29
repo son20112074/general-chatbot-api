@@ -9,7 +9,6 @@ class NodeResponse(BaseModel):
     entity_type: str = Field(..., description="Type of entity (e.g. person, organization, technology)")
     attributes: Dict = Field(default={}, description="Additional key-value attributes")
     summary: str = Field(default="", description="Summary or description of the node")
-    file_id: Optional[int] = Field(None, description="ID of the source file this node was extracted from")
     created_at: Optional[str] = Field(None, description="ISO 8601 creation timestamp")
 
 
@@ -22,7 +21,6 @@ class EdgeResponse(BaseModel):
     edge_type: str = Field(..., description="Type of relationship (e.g. works_at, located_in)")
     fact: str = Field(default="", description="Fact or description of the relationship")
     attributes: Dict = Field(default={}, description="Additional key-value attributes")
-    file_id: Optional[int] = Field(None, description="ID of the source file this edge was extracted from")
     created_at: Optional[str] = Field(None, description="ISO 8601 creation timestamp")
 
 

@@ -28,3 +28,6 @@ migrate-current: ## Show current migration revision
 
 migrate-history: ## Show migration history
 	alembic history --verbose
+
+migrate-heads: ## Show current heads
+	alembic heads

@@ -19,6 +19,3 @@ class Node(Base):
     attributes = Column(JSONB, nullable=True)
     summary = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=True, default=datetime.utcnow)
-    file_id = Column(Integer, ForeignKey(f'{settings.DB_SCHEMA}.files.id', ondelete='SET NULL'), nullable=True, index=True)
-
-    file = relationship("File", foreign_keys=[file_id])
