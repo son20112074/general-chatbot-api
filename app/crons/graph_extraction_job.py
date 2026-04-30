@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError, root_validator, validator
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -551,6 +551,68 @@ def _deduplicate_results(all_extracted: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Node summary builder
+# ---------------------------------------------------------------------------
+
+# Cap the summary length so we don't blow up storage / LLM context budgets.
+NODE_SUMMARY_MAX_CHARS = 1000
+NODE_SUMMARY_MAX_FACTS = 8
+
+
+def _build_node_summary(
+    name: str,
+    entity_type: str,
+    attributes: dict[str, Any] | None,
+    facts: list[str],
+) -> str:
+    """Build a concise, human-readable summary for a node.
+
+    Best-practice approach used by production Graph-RAG systems (Microsoft
+    GraphRAG, Graphiti, LightRAG): deterministically derive each node's
+    summary from information already extracted in the same LLM call —
+    its attributes and the `fact` strings of its incident relationships.
+    No extra LLM round-trip is needed, which keeps the pipeline cheap,
+    fast, and resilient to LLM failures.
+
+    Output format:
+        "<name> (<entity_type>) — <attr1>: <val>; <attr2>: <val>. <fact1>. <fact2>..."
+    """
+    parts: list[str] = []
+
+    # Attributes section: keep only non-empty values
+    if attributes:
+        attr_pairs = [
+            f"{k}: {v}"
+            for k, v in attributes.items()
+            if v not in (None, "", [], {})
+        ]
+        if attr_pairs:
+            parts.append("; ".join(attr_pairs))
+
+    # Facts section: deduplicate, trim, cap count
+    seen: set[str] = set()
+    fact_list: list[str] = []
+    for f in facts:
+        f = (f or "").strip().rstrip(".")
+        if not f or f in seen:
+            continue
+        seen.add(f)
+        fact_list.append(f)
+        if len(fact_list) >= NODE_SUMMARY_MAX_FACTS:
+            break
+    if fact_list:
+        parts.append(". ".join(fact_list) + ".")
+
+    header = f"{name} ({entity_type})"
+    summary = f"{header} — {' '.join(parts)}" if parts else header
+
+    # Hard cap to keep the field bounded
+    if len(summary) > NODE_SUMMARY_MAX_CHARS:
+        summary = summary[: NODE_SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # Text splitting (with overlap)
 # ---------------------------------------------------------------------------
 
@@ -639,6 +701,7 @@ async def _upsert_nodes_edges(
         "name": file_name,
         "entity_type": "Document",
         "attributes": {"file_name": file_name},
+        "summary": f"Tài liệu: {file_name}",
     }
 
     for ent in extracted.get("entities", []):
@@ -700,6 +763,32 @@ async def _upsert_nodes_edges(
                         "attributes": {},
                     }
 
+    # ── Build summary for each node from its incident facts + attributes ──
+    # Group facts by the (name, entity_type) keys of source / target nodes.
+    facts_by_key: dict[tuple[str, str], list[str]] = {}
+    for rel in extracted.get("relationships", []):
+        fact = (rel.get("fact") or "").strip()
+        if not fact:
+            continue
+        src_key = (rel.get("source"), rel.get("source_type"))
+        tgt_key = (rel.get("target"), rel.get("target_type"))
+        if src_key in nodes_by_key:
+            facts_by_key.setdefault(src_key, []).append(fact)
+        if tgt_key in nodes_by_key and tgt_key != src_key:
+            facts_by_key.setdefault(tgt_key, []).append(fact)
+
+    for key, node in nodes_by_key.items():
+        # Document node already has its own summary; skip.
+        if key == (file_name, "Document"):
+            continue
+        name, etype = key
+        node["summary"] = _build_node_summary(
+            name,
+            etype,
+            node.get("attributes") or {},
+            facts_by_key.get(key, []),
+        )
+
     node_values = list(nodes_by_key.values())
 
     id_map: dict[tuple[str, str], Any] = {}
@@ -707,7 +796,15 @@ async def _upsert_nodes_edges(
         stmt_nodes = pg_insert(Node).values(node_values)
         stmt_nodes = stmt_nodes.on_conflict_do_update(
             constraint="uq_node_name_type",
-            set_={"attributes": Node.attributes + stmt_nodes.excluded.attributes},
+            set_={
+                "attributes": Node.attributes + stmt_nodes.excluded.attributes,
+                # Prefer the freshly-built summary; keep the existing one if
+                # the new one happens to be NULL/empty (defensive fallback).
+                "summary": func.coalesce(
+                    func.nullif(stmt_nodes.excluded.summary, ""),
+                    Node.summary,
+                ),
+            },
         )
         stmt_nodes = stmt_nodes.returning(Node.name, Node.entity_type, Node.id)
         res = await session.execute(stmt_nodes)
