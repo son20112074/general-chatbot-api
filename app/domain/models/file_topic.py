@@ -17,4 +17,6 @@ class FileTopic(Base):
     file_id = Column(Integer, ForeignKey(f"{settings.DB_SCHEMA}.files.id", ondelete="CASCADE"), nullable=False)
     topic_id = Column(Integer, ForeignKey(f"{settings.DB_SCHEMA}.topics.id", ondelete="CASCADE"), nullable=False)
     is_matched = Column(Boolean, nullable=False, default=False)
+    classify_attempts = Column(Integer, nullable=False, default=0, server_default="0")
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=None, onupdate=datetime.utcnow)

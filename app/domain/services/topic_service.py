@@ -6,6 +6,7 @@ from app.domain.models.user import User
 from app.core.config import settings
 from app.presentation.api.v1.schemas.topic import TopicCreate, TopicUpdate, TopicResponse
 from app.domain.models.topic import Topic
+from app.domain.models.file_topic import FileTopic
 
 ADMIN_ROLE_ID = settings.ADMIN_ROLE_ID
 
@@ -71,17 +72,17 @@ class TopicService:
         
         count_query = select(func.count()).select_from(Topic).outerjoin(User, Topic.created_by == User.id).where(Topic.is_deleted == False)
 
-        # RBAC: non-admin sees only subordinate users (child roles, not peers) and users
+        # RBAC: non-admin sees only subordinate users (child roles, not peers) and users => new version: only current users
         if current_role_id and current_role_id != ADMIN_ROLE_ID:
-            child_role_ids = await self.get_child_roles(current_role_id)
+            # child_role_ids = await self.get_child_roles(current_role_id)
             
             # owner
-            rbac_filter = (User.id == current_user_id)
-            if child_role_ids:
-                rbac_filter = or_(User.role_id.in_(child_role_ids), rbac_filter)
+            filter = (User.id == current_user_id)
+            # if child_role_ids:
+            #     filter = or_(User.role_id.in_(child_role_ids), filter)
             
-            query = query.where(rbac_filter)
-            count_query = count_query.where(rbac_filter)
+            query = query.where(filter)
+            count_query = count_query.where(filter)
 
         if search:
             escaped = _escape_like(search)
@@ -98,10 +99,30 @@ class TopicService:
         query = query.order_by(Topic.created_at.desc()).offset(skip).limit(limit)
 
         result = await self.db.execute(query)
-        topics = []
+        rows = list(result)
 
-        for topic, u_id, u_name in result:
-            topics.append(self._build_topic_response(topic, u_id, u_name))
+        # Performance: aggregate file_total only over the paged topic IDs (not all topics).
+        # Index `idx_file_topics_topic_id` covers the topic_id IN (...) lookup;
+        # is_matched filter is applied during the index scan.
+        paged_topic_ids = [topic.id for topic, _u_id, _u_name in rows]
+        totals_map: Dict[int, int] = {}
+        if paged_topic_ids:
+            totals_q = (
+                select(FileTopic.topic_id, func.count(FileTopic.id).label("file_total"))
+                .where(
+                    FileTopic.topic_id.in_(paged_topic_ids),
+                    FileTopic.is_matched == True,
+                )
+                .group_by(FileTopic.topic_id)
+            )
+            totals_result = await self.db.execute(totals_q)
+            totals_map = {tid: cnt for tid, cnt in totals_result.all()}
+
+        topics = []
+        for topic, u_id, u_name in rows:
+            item = self._build_topic_response(topic, u_id, u_name)
+            item["file_total"] = totals_map.get(topic.id, 0)
+            topics.append(item)
 
         return {"data": topics, "total": total}
     

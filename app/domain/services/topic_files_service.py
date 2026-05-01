@@ -1,6 +1,7 @@
+from datetime import datetime
 from typing import Optional, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import and_, select, func, or_
+from sqlalchemy import and_, select, func, or_, update
 from app.domain.models.user import User
 from app.core.config import settings
 from app.domain.models.topic import Topic
@@ -44,7 +45,7 @@ class TopicFilesService:
                     File.is_deleted == False,
                     or_(
                         Topic.created_by == current_user_id, # owner: include all file type
-                        File.type != "private"               # not owner: only include file type "genaral" and "organization"
+                        File.type == "organization"               # not owner: only include file type "organization"
                     )
                 )
             )
@@ -55,14 +56,16 @@ class TopicFilesService:
             .select_from(FileTopic)
             .join(File, FileTopic.file_id == File.id)
             .join(Topic, FileTopic.topic_id == Topic.id)
+            .outerjoin(User, File.created_by == User.id)
             .where(
                 and_(
                     FileTopic.topic_id == topic_id,
+                    FileTopic.is_matched == True,
                     File.is_deleted == False,
                     or_(
-                        Topic.created_by == current_user_id, 
-                        File.type != "private"    
-                    ) 
+                        Topic.created_by == current_user_id,
+                        File.type == "organization"
+                    )
                 )
             )
         )
@@ -71,7 +74,9 @@ class TopicFilesService:
             escaped = _escape_like(search)
             search_filter = or_(
                 File.name.ilike(f"%{escaped}%"),
-                User.full_name.ilike(f"%{escaped}%")
+                User.full_name.ilike(f"%{escaped}%"),
+                File.summary.ilike(f"%{escaped}%"),
+                File.content.ilike(f"%{escaped}%")
             )
             query = query.where(search_filter)
             count_query = count_query.where(search_filter)
@@ -89,6 +94,85 @@ class TopicFilesService:
 
         return {"data": files, "total": total}
     
+    async def _get_topic_for_owner(self, topic_id: int, current_user_id: int) -> Topic:
+        """Fetch active topic and verify current user owns it. Raises on missing/forbidden."""
+        topic_result = await self.db.execute(
+            select(Topic).where(Topic.id == topic_id, Topic.is_deleted == False)
+        )
+        topic = topic_result.scalar_one_or_none()
+        if not topic:
+            raise LookupError("Topic not found")
+        if topic.created_by != current_user_id:
+            raise PermissionError("You can not modify this topic")
+        return topic
+
+    async def _get_active_file(self, file_id: int) -> File:
+        """Fetch a non-deleted file. Raises if missing or soft-deleted."""
+        file_result = await self.db.execute(
+            select(File).where(File.id == file_id, File.is_deleted == False)
+        )
+        f = file_result.scalar_one_or_none()
+        if not f:
+            raise LookupError("File not found")
+        return f
+
+    async def add_file_to_topic(
+        self,
+        topic_id: int,
+        file_id: int,
+        current_user_id: int,
+    ) -> dict:
+        """Owner-only: insert a file→topic match (is_matched=True) or update if it already exists."""
+        await self._get_topic_for_owner(topic_id, current_user_id)
+        await self._get_active_file(file_id)
+
+        existing_q = select(FileTopic).where(
+            FileTopic.topic_id == topic_id, FileTopic.file_id == file_id
+        )
+        existing = (await self.db.execute(existing_q)).scalar_one_or_none()
+
+        if existing is None:
+            now = datetime.utcnow()
+            ft = FileTopic(
+                file_id=file_id,
+                topic_id=topic_id,
+                is_matched=True,
+                created_at=now,
+                updated_at=now,
+            )
+            self.db.add(ft)
+            await self.db.commit()
+            await self.db.refresh(ft)
+            return {"id": ft.id, "topic_id": topic_id, "file_id": file_id, "is_matched": True}
+
+        existing.is_matched = True
+        existing.updated_at = datetime.utcnow()
+        await self.db.commit()
+        await self.db.refresh(existing)
+        return {"id": existing.id, "topic_id": topic_id, "file_id": file_id, "is_matched": True}
+
+    async def remove_file_from_topic(
+        self,
+        topic_id: int,
+        file_id: int,
+        current_user_id: int,
+    ) -> dict:
+        """Owner-only: set is_matched=False on the (topic_id, file_id) record."""
+        await self._get_topic_for_owner(topic_id, current_user_id)
+
+        existing_q = select(FileTopic).where(
+            FileTopic.topic_id == topic_id, FileTopic.file_id == file_id
+        )
+        existing = (await self.db.execute(existing_q)).scalar_one_or_none()
+        if existing is None:
+            raise LookupError("File is not matched to this topic")
+
+        existing.is_matched = False
+        existing.updated_at = datetime.utcnow()
+        await self.db.commit()
+        await self.db.refresh(existing)
+        return {"id": existing.id, "topic_id": topic_id, "file_id": file_id, "is_matched": False}
+
     def _build_file_item(self, f, u_id, u_name) -> dict:
         """Build a file list item dict from a File ORM object and owner info."""
         return {

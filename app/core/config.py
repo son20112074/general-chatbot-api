@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     DB_SCHEMA: str = "public"
 
     # JWT settings
-    SECRET_KEY: str = "4404229d1f3b6470a1b55b791dadb7035c9be77ac2d8dafcf9b25ff76cea8cef"
+    SECRET_KEY: str 
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours (increased from 30 minutes)
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30  # 30 days (increased from 7 days)
@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     TOPIC_CLASSIFY_BATCH_SIZE: int = 5
     TOPIC_CLASSIFY_MAX_RETRIES: int = 3
     TOPIC_CLASSIFY_MAX_CONTENT_CHARS: int = 16000
+    # Per-pair (file_id, topic_id)
+    TOPIC_CLASSIFY_PAIR_MAX_RETRIES: int = 3
+    TOPIC_CLASSIFY_LLM_RATE_LIMIT_RETRIES: int = 3
+    TOPIC_CLASSIFY_LLM_RATE_LIMIT_MAX_SLEEP_SECONDS: int = 30
 
     # Add these settings to your Settings class
     REDIS_HOST: str = "localhost"

@@ -2,11 +2,14 @@
 # Deploy script for general-chatbot-api on server.
 #
 # Usage:
-#   ./deploy.sh <env>                  # build & deploy using version from <env>/VERSION
-#   ./deploy.sh <env> -v 1.2.3         # build & deploy with explicit version
-#   ./deploy.sh <env> rollback         # rollback to previous image
-#   ./deploy.sh <env> use <tag>        # switch to an existing image tag (no rebuild)
-#   ./deploy.sh <env> list             # list all local image tags
+#   ./deploy.sh <env>                          # build & deploy using version from <env>/VERSION
+#   ./deploy.sh <env> -v 1.2.3                 # build & deploy with explicit version
+#   ./deploy.sh <env> [-v X] --no-cache        # force rebuild without docker layer cache
+#   ./deploy.sh <env> rollback                 # rollback to previous image
+#   ./deploy.sh <env> use <tag>                # switch to an existing image tag (no rebuild)
+#   ./deploy.sh <env> down                     # stop & remove containers (no volume removal)
+#   ./deploy.sh <env> down -v                  # stop, remove containers AND named volumes
+#   ./deploy.sh <env> list                     # list all local image tags
 #
 # <env> is the environment subfolder under deploy/ (dev, stag, prod).
 # Each environment has its own docker-compose.yml, .env, and VERSION file.
@@ -16,6 +19,10 @@
 #   chatbot-api-<env>:<version>-<git_hash>  e.g. chatbot-api-dev:1.2.3-abc1234
 #   chatbot-api-<env>:latest
 # And re-tags :latest → :previous before tagging the new image as latest.
+#
+# Compose project name is locked via the `name:` field at the top of each
+# environment's docker-compose.yml, so manual `docker-compose down` invocations
+# from the env folder still target the same project as this script.
 
 set -e
 
@@ -94,7 +101,7 @@ case "$1" in
         fi
         echo "==> Rolling back to ${IMAGE_NAME}:previous"
         sudo docker tag ${IMAGE_NAME}:previous ${IMAGE_NAME}:latest
-        IMAGE_TAG=latest IMAGE_NAME=${IMAGE_NAME} sudo -E ${COMPOSE} up -d --no-build
+        IMAGE_TAG=latest IMAGE_NAME=${IMAGE_NAME} sudo -E ${COMPOSE} up -d --no-build --force-recreate
         sudo ${COMPOSE} ps
         exit 0
         ;;
@@ -111,13 +118,46 @@ case "$1" in
         list_tags
         exit 0
         ;;
+    down)
+        # `down -v` also removes named volumes (DESTRUCTIVE — postgres/redis/minio data).
+        DOWN_FLAGS=""
+        if [ "$2" = "-v" ] || [ "$2" = "--volumes" ]; then
+            echo "==> [${ENV_NAME}] Stopping containers AND removing named volumes (destructive)"
+            DOWN_FLAGS="--volumes"
+        else
+            echo "==> [${ENV_NAME}] Stopping & removing containers (volumes preserved)"
+        fi
+        sudo ${COMPOSE} down ${DOWN_FLAGS}
+        exit 0
+        ;;
 esac
 
-# ── Resolve version ─────────────────────────────────────────────
+# ── Parse build flags ───────────────────────────────────────────
+# Recognized flags (order-independent after env): -v <ver>, --no-cache
 VERSION=""
-if [ "$1" = "-v" ] && [ -n "$2" ]; then
-    VERSION="$2"
-elif [ -f "$VERSION_FILE" ]; then
+NO_CACHE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -v)
+            if [ -z "$2" ]; then
+                echo "ERROR: -v requires a version argument"
+                exit 1
+            fi
+            VERSION="$2"
+            shift 2
+            ;;
+        --no-cache)
+            NO_CACHE="--no-cache"
+            shift
+            ;;
+        *)
+            echo "ERROR: unknown argument '$1'"
+            exit 1
+            ;;
+    esac
+done
+
+if [ -z "$VERSION" ] && [ -f "$VERSION_FILE" ]; then
     VERSION=$(cat "$VERSION_FILE" | tr -d '[:space:]')
 fi
 
@@ -142,8 +182,10 @@ if image_exists latest; then
     sudo docker tag ${IMAGE_NAME}:latest ${IMAGE_NAME}:previous
 fi
 
-echo "==> Building ${IMAGE_NAME}:${FULL_TAG}"
-IMAGE_TAG=${FULL_TAG} IMAGE_NAME=${IMAGE_NAME} sudo -E ${COMPOSE} build chatbot-api
+echo "==> Building ${IMAGE_NAME}:${FULL_TAG}${NO_CACHE:+ (no cache)}"
+# `--pull` always refreshes base images (e.g. python:3.12-slim) so security/runtime
+# patches land. `--no-cache` (opt-in via flag) discards layer cache for a full rebuild.
+IMAGE_TAG=${FULL_TAG} IMAGE_NAME=${IMAGE_NAME} sudo -E ${COMPOSE} build --pull ${NO_CACHE} chatbot-api
 
 # Tag with both the short version and the full version-hash, plus latest
 sudo docker tag ${IMAGE_NAME}:${FULL_TAG} ${IMAGE_NAME}:${VERSION}
@@ -153,7 +195,9 @@ echo "==> Stopping containers"
 sudo ${COMPOSE} down
 
 echo "==> Starting containers"
-IMAGE_TAG=latest IMAGE_NAME=${IMAGE_NAME} sudo -E ${COMPOSE} up -d
+# `--force-recreate` ensures the container is replaced even when the image tag
+# string did not change (e.g. :latest re-pointed to a new image id).
+IMAGE_TAG=latest IMAGE_NAME=${IMAGE_NAME} sudo -E ${COMPOSE} up -d --force-recreate
 
 echo "==> Current status"
 sudo ${COMPOSE} ps
@@ -167,3 +211,5 @@ echo "    Tail logs:      sudo ${COMPOSE} logs -f chatbot-api"
 echo "    Rollback:       ./deploy.sh ${ENV_NAME} rollback"
 echo "    Switch tag:     ./deploy.sh ${ENV_NAME} use <tag>"
 echo "    List images:    ./deploy.sh ${ENV_NAME} list"
+echo "    Stop:           ./deploy.sh ${ENV_NAME} down"
+echo "    No-cache build: ./deploy.sh ${ENV_NAME} --no-cache"

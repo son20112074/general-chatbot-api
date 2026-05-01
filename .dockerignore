@@ -1,0 +1,107 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info
+.eggs
+build
+dist
+develop-eggs
+downloads
+eggs
+lib
+lib64
+parts
+sdist
+var
+pip-wheel-metadata
+
+# Virtual environments
+venv
+ENV
+env
+.venv
+.env.*
+!.env.example
+
+# Secrets / local env
+.env
+*.pem
+*.key
+
+# IDE / editors
+.idea
+.vscode
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Claude / worktrees / agents
+.claude
+.claude-*
+
+# Tests & coverage
+tests
+.pytest_cache
+.coverage
+.coverage.*
+htmlcov
+.tox
+.nox
+.mypy_cache
+.ruff_cache
+
+# Logs
+*.log
+logs
+
+# Docs
+docs
+*.md
+!README.md
+
+# Deploy (build context only needs Dockerfile + source)
+deploy
+
+# Docker
+.docker
+docker-compose*.yml
+Dockerfile.*
+!Dockerfile
+
+# Unused / backup requirements
+requirements.bk.txt
+requirements.chatbot.txt
+
+# Large sample / test data
+*.pdf
+*.zip
+*.tar
+*.tar.gz
+ai_news.txt
+news.txt
+template.txt
+test.pdf
+test_pdf.py
+
+# Runtime / uploads
+static/uploads
+static/tmp
+uploads
+tmp
+
+# Node (in case of tooling)
+node_modules
+
+# CI
+.github
+.gitlab-ci.yml
