@@ -58,7 +58,16 @@ shift  # consume env arg, leaving the rest as subcommand/flags
 IMAGE_NAME="chatbot-api-${ENV_NAME}"
 VERSION_FILE="${ENV_DIR}/VERSION"
 BRANCH_FILE="${ENV_DIR}/BRANCH"
-COMPOSE="docker-compose -f ${ENV_DIR}/docker-compose.yml -p chatbot-api-${ENV_NAME}"
+# Prefer Compose v2 (`docker compose` plugin); fall back to v1 (`docker-compose` binary).
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE_BIN="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE_BIN="docker-compose"
+else
+    echo "ERROR: neither 'docker compose' (v2 plugin) nor 'docker-compose' (v1) is installed."
+    exit 1
+fi
+COMPOSE="${COMPOSE_BIN} -f ${ENV_DIR}/docker-compose.yml -p chatbot-api-${ENV_NAME}"
 
 # Resolve branch from env folder, default to develop
 if [ -f "$BRANCH_FILE" ]; then

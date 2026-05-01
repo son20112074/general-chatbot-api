@@ -57,10 +57,14 @@ Replace `dev` with `stag` or `prod` for other environments.
 
 ### Why use `down` from the script
 
-The compose project name is locked via `name:` in each env's `docker-compose.yml`,
-so `cd deploy/dev && docker-compose down` works as well — both target the same
-project (`chatbot-api-dev`). Use the script's `down` for consistency and to enable
-the `down -v` shortcut.
+The script passes `-p chatbot-api-dev` explicitly so it always targets the right
+compose project. Manual `cd deploy/dev && docker-compose down` defaults the
+project name to the folder (`dev`), which does **not** match — containers stay
+running. Always use `./deploy.sh dev down`, or pass `-p chatbot-api-dev` manually:
+
+```bash
+docker-compose -f deploy/dev/docker-compose.yml -p chatbot-api-dev down
+```
 
 ### When to use `--no-cache`
 
