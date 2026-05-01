@@ -1,5 +1,5 @@
 from datetime import date, datetime, time
-from typing import List, Literal, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -10,7 +10,6 @@ class ReportTemplateCreate(BaseModel):
     name: str = Field(..., max_length=255)
     description: Optional[str] = None
     frequency: str = Field(..., description="daily | weekly | monthly | quarterly")
-    creation_day: Optional[Literal["today", "tomorrow"]] = None
     creation_time: Optional[time] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
@@ -28,7 +27,6 @@ class ReportTemplateUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=255)
     description: Optional[str] = None
     frequency: Optional[str] = None
-    creation_day: Optional[Literal["today", "tomorrow"]] = None
     creation_time: Optional[time] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
@@ -47,7 +45,6 @@ class ReportTemplateResponse(BaseModel):
     name: str
     description: Optional[str] = None
     frequency: str
-    creation_day: Optional[str] = None
     creation_time: Optional[time] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None

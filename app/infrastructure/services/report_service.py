@@ -30,7 +30,6 @@ class ReportService:
             name=data.name,
             description=data.description,
             frequency=FrequencyEnum(data.frequency),
-            creation_day=data.creation_day,
             creation_time=data.creation_time,
             start_date=data.start_date,
             end_date=data.end_date,

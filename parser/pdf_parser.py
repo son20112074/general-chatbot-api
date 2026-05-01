@@ -36,42 +36,38 @@ class PDFParser:
     """Parser for PDF documents supporting both text-based and image-based PDFs."""
 
     def _is_image_based_pdf(self, file_path: Union[str, Path]) -> bool:
-        """
-        Check if PDF is image-based (scanned) or text-based.
+        """Check if PDF is image-based (scanned) by attempting text extraction."""
+        file_path = Path(file_path)
 
-        Args:
-            file_path: Path to the PDF file
+        if fitz is not None:
+            try:
+                doc = fitz.open(str(file_path))
+                text_content = ""
+                pages_to_check = min(3, len(doc))
+                for i in range(pages_to_check):
+                    try:
+                        text_content += doc.load_page(i).get_text("text").strip()
+                    except Exception:
+                        continue
+                doc.close()
+                is_image = len(text_content) <= 50
+                logger.info("PDF type check via PyMuPDF: %s (%d chars)", "image-based" if is_image else "text-based", len(text_content))
+                return is_image
+            except Exception as e:
+                logger.warning("PyMuPDF check failed: %s. Falling back to pypdf check.", e)
 
-        Returns:
-            True if PDF is image-based, False if text-based
-        """
-        if fitz is None:
-            logger.warning("PyMuPDF (fitz) not available, assuming image-based PDF")
-            return True
-
+        # fitz unavailable or failed — use pypdf
         try:
-            file_path = Path(file_path)
-            doc = fitz.open(str(file_path))
+            from pypdf import PdfReader
+            reader = PdfReader(str(file_path))
             text_content = ""
-            pages_to_check = min(3, len(doc))
-            for i in range(pages_to_check):
-                try:
-                    page = doc.load_page(i)
-                    text = page.get_text("text")
-                    if text:
-                        text_content += text.strip()
-                except Exception as e:
-                    logger.debug("Error extracting text from page %s: %s", i, e)
-                    continue
-            doc.close()
-
-            if len(text_content) > 50:
-                logger.info("PDF appears to be text-based (found %d characters)", len(text_content))
-                return False
-            logger.info("PDF appears to be image-based (little or no text found)")
-            return True
+            for page in reader.pages[:3]:
+                text_content += (page.extract_text() or "").strip()
+            is_image = len(text_content) <= 50
+            logger.info("PDF type check via pypdf: %s (%d chars)", "image-based" if is_image else "text-based", len(text_content))
+            return is_image
         except Exception as e:
-            logger.warning("Error checking PDF type with PyMuPDF: %s. Assuming image-based PDF.", e)
+            logger.warning("pypdf check failed: %s. Assuming image-based PDF.", e)
             return True
 
     def _extract_text_from_pdf(self, file_path: Union[str, Path]) -> str:
@@ -108,6 +104,42 @@ class PDFParser:
             res.print()
         return collect_text(output)
 
+    def _extract_text_from_image_pdf_tesseract(self, file_path: Union[str, Path]) -> str:
+        """Fallback OCR: render each PDF page to image at 300 DPI, then run pytesseract."""
+        try:
+            import pytesseract
+        except ImportError as exc:
+            raise ImportError(f"pytesseract is required for OCR fallback: {exc}")
+
+        parts: list = []
+
+        if fitz is not None:
+            import io
+            from PIL import Image
+            doc = fitz.open(str(file_path))
+            try:
+                for page in doc:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))
+                    img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    text = pytesseract.image_to_string(img, lang="vie+eng")
+                    if text.strip():
+                        parts.append(text.strip())
+            finally:
+                doc.close()
+        else:
+            # fitz not installed — use pdf2image (requires poppler)
+            try:
+                from pdf2image import convert_from_path
+            except ImportError as exc:
+                raise ImportError(f"pdf2image is required when PyMuPDF is not installed: {exc}")
+            images = convert_from_path(str(file_path), dpi=300)
+            for img in images:
+                text = pytesseract.image_to_string(img, lang="vie+eng")
+                if text.strip():
+                    parts.append(text.strip())
+
+        return "\n\n".join(parts)
+
     def parse_pdf(self, file_path: Union[str, Path]) -> Dict[str, Any]:
         """
         Parse PDF documents (.pdf).
@@ -137,28 +169,22 @@ class PDFParser:
             is_image_based = self._is_image_based_pdf(file_path)
 
             if is_image_based:
-                if not _is_paddle_available():
-                    return {
-                        "success": False,
-                        "error": (
-                            "paddleocr is required for image-based PDF. "
-                            "Install: pip install -U \"paddleocr[doc-parser]\" and set PADDLEOCR_VL_SERVER_URL."
-                        ),
-                        "content": "",
-                        "summary": ""
-                    }
-                combined_content = self._extract_text_from_image_pdf(file_path)
-                parsed_with = "paddleocr-vl"
+                if _is_paddle_available():
+                    combined_content = self._extract_text_from_image_pdf(file_path)
+                    parsed_with = "paddleocr-vl"
+                else:
+                    logger.info("PaddleOCR not available, falling back to pytesseract for image-based PDF: %s", file_path)
+                    combined_content = self._extract_text_from_image_pdf_tesseract(file_path)
+                    parsed_with = "pytesseract"
             else:
-                if fitz is None:
-                    return {
-                        "success": False,
-                        "error": "PyMuPDF (fitz) is required for text-based PDF. pip install pymupdf",
-                        "content": "",
-                        "summary": ""
-                    }
-                combined_content = self._extract_text_from_pdf(file_path)
-                parsed_with = "pymupdf"
+                if fitz is not None:
+                    combined_content = self._extract_text_from_pdf(file_path)
+                    parsed_with = "pymupdf"
+                else:
+                    from pypdf import PdfReader
+                    reader = PdfReader(str(file_path))
+                    combined_content = "\n".join([p.extract_text() or "" for p in reader.pages])
+                    parsed_with = "pypdf"
 
             if not combined_content or not combined_content.strip():
                 return {

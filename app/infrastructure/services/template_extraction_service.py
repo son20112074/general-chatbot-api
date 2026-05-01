@@ -353,8 +353,7 @@ class TemplateExtractionService:
         suffix = path.suffix.lower()
 
         if suffix == ".pdf":
-            reader = PdfReader(str(path))
-            return "\n".join([p.extract_text() or "" for p in reader.pages])
+            return self._extract_pdf_text(str(path))
 
         if suffix == ".docx":
             return extract_docx_content(str(path))
@@ -369,3 +368,37 @@ class TemplateExtractionService:
             return extract_csv_content(str(path))
 
         return extract_text_content(str(path))
+
+    def _extract_pdf_text(self, file_path: str) -> str:
+        reader = PdfReader(file_path)
+        text = "\n".join([p.extract_text() or "" for p in reader.pages])
+
+        if len(text.strip()) > 50:
+            return text
+
+        logger.info("PDF appears image-based (little text from pypdf), falling back to OCR: %s", file_path)
+        return self._ocr_pdf(file_path)
+
+    def _ocr_pdf(self, file_path: str) -> str:
+        try:
+            import io
+            import fitz
+            import pytesseract
+            from PIL import Image
+        except ImportError as exc:
+            logger.error("OCR fallback unavailable — install pymupdf and pytesseract: %s", exc)
+            return ""
+
+        doc = fitz.open(file_path)
+        parts: List[str] = []
+        try:
+            for page in doc:
+                pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                page_text = pytesseract.image_to_string(img, lang="vie+eng")
+                if page_text.strip():
+                    parts.append(page_text.strip())
+        finally:
+            doc.close()
+
+        return "\n\n".join(parts)

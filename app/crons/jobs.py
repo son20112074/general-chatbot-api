@@ -6,10 +6,7 @@ from app.crons.graph_extraction_job import graph_extraction_job
 from app.crons.topic_classification_job import topic_classification_job
 from app.core.config import settings
 from app.crons.report_export_job import (
-    report_export_daily_job,
-    report_export_weekly_job,
-    report_export_monthly_job,
-    report_export_quarterly_job,
+    report_export_all_job,
     test_report_export_weekly,
 )
 from app.core.logger import get_logger
@@ -53,42 +50,13 @@ def register_jobs(scheduler: AsyncIOScheduler):
         replace_existing=True,
         max_instances=1,
     )
-    # Report export jobs run every hour so creation_time is respected within a 1-hour window.
-    # Each job checks _should_run_today (day + time gate) and an idempotency guard to prevent
-    # double-processing the same period.
     scheduler.add_job(
-        report_export_daily_job,
-        trigger="interval",
-        minutes=2,
-        id="report_export_daily",
-        name="Report Export (Daily)",
-        replace_existing=True,
-    )
-
-    scheduler.add_job(
-        report_export_weekly_job,
-        trigger="interval",
-        hours=1,
-        id="report_export_weekly",
-        name="Report Export (Weekly)",
-        replace_existing=True,
-    )
-
-    scheduler.add_job(
-        report_export_monthly_job,
-        trigger="interval",
-        hours=1,
-        id="report_export_monthly",
-        name="Report Export (Monthly)",
-        replace_existing=True,
-    )
-
-    scheduler.add_job(
-        report_export_quarterly_job,
-        trigger="interval",
-        minutes=2,
-        id="report_export_quarterly",
-        name="Report Export (Quarterly)",
+        report_export_all_job,
+        trigger="cron",
+        hour=23,
+        minute=0,
+        id="report_export_all",
+        name="Report Export (All)",
         replace_existing=True,
     )
 
