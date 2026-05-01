@@ -1,3 +1,8 @@
+# Top-level project name locks compose to the same -p regardless of which folder
+# `docker-compose` is invoked from (deploy/ vs deploy/dev/) — ensures `down`
+# tears down resources created by deploy.sh's matching -p.
+name: chatbot-api-dev
+
 services:
   chatbot-api:
     build:
@@ -15,10 +20,10 @@ services:
       - .env
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on:
-      - db
-      - redis
-      - mqtt-broker
+    # depends_on:
+    #   - db
+    #   - redis
+    #   - mqtt-broker
     networks:
       - chatbot-shared
     restart: unless-stopped

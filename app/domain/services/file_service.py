@@ -487,6 +487,8 @@ class FileQueryService:
                 search_cond = or_(
                     FileModel.name.ilike(like),
                     FolderModel.name.ilike(like),
+                    FileModel.summary.ilike(like),
+                    FileModel.content.ilike(like),
                     User.full_name.ilike(like),
                     RoleModel.name.ilike(like),
                 )

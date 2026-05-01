@@ -201,6 +201,21 @@ class RoleService:
         )
         return [row[0] for row in result.fetchall()]
 
+    async def get_ancestor_role_ids(self, role_id: int) -> List[int]:
+        """Return strict ancestor role IDs for `role_id`.
+
+        Parses `role.parent_path` (a comma-delimited string like ",1,2,5,").
+        Excludes `role_id` itself. Returns [] when the role is root, missing,
+        or has no parent_path.
+        """
+        role = await self.get_role(role_id)
+        if not role:
+            return []
+        pp = role.parent_path or ""
+        if not pp:
+            return []
+        return [int(tok) for tok in pp.split(",") if tok.strip()]
+
     # ── query ────────────────────────────────────────────────
 
     async def query_roles(self, query_params: RoleQuery) -> Dict:

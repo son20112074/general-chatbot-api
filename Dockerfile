@@ -1,30 +1,58 @@
-FROM python:3.12.10
+# syntax=docker/dockerfile:1.7
+FROM python:3.12.10-slim AS builder
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore
 
-# Set the working directory
 WORKDIR /app
 
-# Install system dependencies
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc libpq-dev \
-    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file
 COPY requirements.txt .
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --upgrade pip \
+    && /opt/venv/bin/pip install -r requirements.txt
 
-# Install Python dependencies
-RUN pip install --upgrade pip \
-    && pip install -r requirements.txt
+# ---------- runtime ----------
+FROM python:3.12.10-slim AS runtime
 
-# # Copy the project files
-# COPY . .
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_ROOT_USER_ACTION=ignore \
+    PATH="/opt/venv/bin:$PATH"
 
-# Expose the port the app runs on
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libpq5 \
+        curl \
+        libmagic1 \
+        poppler-utils \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        tesseract-ocr-vie \
+        antiword \
+        libxml2 \
+        libxslt1.1 \
+        libjpeg62-turbo \
+        libpng16-16 \
+        libtiff6 \
+        libwebp7 \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+
 EXPOSE 8000
 
-# Command to run the application
-CMD uvicorn server_dev:app --host 0.0.0.0 --port 8000 --workers 2
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fsS http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "server_dev:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
