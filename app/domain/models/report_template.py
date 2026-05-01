@@ -17,9 +17,9 @@ class FrequencyEnum(PyEnum):
     QUARTERLY = 'quarterly'
 
 
-class CreationDayEnum(PyEnum):
-    TODAY = 'today'
-    TOMORROW = 'tomorrow'
+# class CreationDayEnum(PyEnum):
+#     TODAY = 'today'
+#     TOMORROW = 'tomorrow'
 
 
 class ReportTemplate(Base):
@@ -33,10 +33,10 @@ class ReportTemplate(Base):
         SAEnum(FrequencyEnum, native_enum=False, length=20, values_callable=lambda e: [m.value for m in e]),
         nullable=False,
     )
-    creation_day = Column(
-        SAEnum(CreationDayEnum, native_enum=False, length=20, values_callable=lambda e: [m.value for m in e]),
-        nullable=True,
-    )
+    # creation_day = Column(
+    #     SAEnum(CreationDayEnum, native_enum=False, length=20, values_callable=lambda e: [m.value for m in e]),
+    #     nullable=True,
+    # )
     creation_time = Column(Time, nullable=True)
     start_date = Column(Date, nullable=True)
     end_date = Column(Date, nullable=True)

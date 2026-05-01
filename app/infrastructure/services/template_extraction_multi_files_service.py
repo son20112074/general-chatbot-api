@@ -73,6 +73,17 @@ class TemplateExtractionMultiFilesService:
             else self._extract_template_keys(report_template)
         )
 
+        # Description is not in "- bullet" format → build hierarchical tree from it via LLM
+        if not template_keys and not template_tree and report_template:
+            logger.info("multi_extract:template_keys_empty — building tree from description via LLM")
+            template_tree = await self._extract_template_tree_via_llm(report_template)
+            template_keys = self._flatten_tree_keys(template_tree) if template_tree else []
+            logger.info(
+                "multi_extract:template_tree_from_desc top_keys=%s flat_keys=%s",
+                len(template_tree or {}),
+                len(template_keys),
+            )
+
         if not file_paths:
             scaffold = (
                 self._build_scaffold(template_tree)
@@ -134,7 +145,7 @@ class TemplateExtractionMultiFilesService:
 
         final_markdown = llm_clustered_markdown
         json_started = time.perf_counter()
-
+        print(final_markdown)
         if template_tree:
             final_json = await self._map_to_json_via_llm(final_markdown, template_tree)
         else:
@@ -622,6 +633,14 @@ JSON:"""
         _flush()
         return root
 
+    @staticmethod
+    def _normalize_key(key: str) -> str:
+        """Lowercase, collapse whitespace, strip leading punctuation for fuzzy key matching."""
+        key = key.lower().strip()
+        key = re.sub(r"[^\w\s]", "", key)
+        key = re.sub(r"\s+", " ", key).strip()
+        return key
+
     def _fill_scaffold_from_parsed(self, scaffold: Dict, parsed: Dict) -> None:
         parsed_norm_map = {
             self._normalize_key(k): k for k in parsed.keys()
@@ -753,11 +772,19 @@ JSON:"""
         markdown: str,
         template_keys: List[str],
     ) -> Dict[str, Any]:
+        if not markdown or not markdown.strip():
+            return {key: None for key in template_keys}
+
+        # When no template keys, derive keys from ## headings in the markdown itself
+        if not template_keys:
+            keys_from_md: List[str] = [
+                line.lstrip("#").strip()
+                for line in markdown.splitlines()
+                if line.strip().startswith("## ")
+            ]
+            template_keys = keys_from_md
+
         result: Dict[str, Any] = {key: None for key in template_keys}
-
-        if not template_keys or not markdown or not markdown.strip():
-            return result
-
         current_section: Optional[str] = None
         buffer: List[str] = []
 
