@@ -91,6 +91,18 @@ DROP_ORPHAN_ENTITIES = True
 # Whether to call the LLM again to try to connect orphan entities
 ENABLE_ORPHAN_REPAIR = True
 
+# Whether to call the LLM to refine each node's summary into smooth prose.
+# When disabled, the deterministic fact-joined summary is used as-is.
+ENABLE_LLM_SUMMARY_REFINEMENT = True
+
+# Max concurrent LLM summary calls per file
+MAX_CONCURRENT_SUMMARIES = 5
+
+# Skip LLM refinement when a node has fewer than this many facts — the
+# deterministic summary is already perfectly readable in that case and the
+# extra LLM cost isn't worth it.
+MIN_FACTS_FOR_LLM_SUMMARY = 2
+
 # ── LLM System Prompt ──
 EXTRACTION_SYSTEM_PROMPT = """\
 Bạn là một extractor để trích xuất thực thể và mối quan hệ cho đồ thị tri thức. Cho một đoạn văn bản (chunk) và định nghĩa ontology RÕ RÀNG bằng tiếng Việt, hãy trích xuất TẤT CẢ thực thể và mối quan hệ có trong đoạn văn.
@@ -613,6 +625,132 @@ def _build_node_summary(
 
 
 # ---------------------------------------------------------------------------
+# LLM-based prose summary refinement
+# ---------------------------------------------------------------------------
+
+SUMMARY_SYSTEM_PROMPT = """\
+Bạn là trợ lý tóm tắt thực thể cho đồ thị tri thức.
+
+Cho TÊN, LOẠI, THUỘC TÍNH và danh sách CÁC SỰ KIỆN/QUAN HỆ liên quan đến một thực thể, hãy viết MỘT đoạn văn ngắn (2–3 câu, tối đa 80 từ) bằng tiếng Việt mô tả thực thể đó một cách tự nhiên, mượt mà.
+
+QUY TẮC BẮT BUỘC:
+1. Kết hợp các facts thành đoạn văn LIỀN MẠCH; KHÔNG liệt kê khô khan từng fact một.
+2. KHÔNG bịa thông tin ngoài dữ liệu được cung cấp.
+3. KHÔNG dùng dấu liệt kê (-, *, 1., …), KHÔNG dùng tiêu đề / fenced code.
+4. Giữ dấu tiếng Việt và tên riêng ở dạng chính tắc.
+5. Chỉ trả về JSON hợp lệ: {"summary": "..."}
+"""
+
+
+def _format_summary_user_prompt(
+    name: str,
+    entity_type: str,
+    attributes: dict[str, Any] | None,
+    facts: list[str],
+) -> str:
+    attrs_str = json.dumps(attributes or {}, ensure_ascii=False)
+    facts_block = "\n".join(f"- {f}" for f in facts)
+    return (
+        f"Tên: {name}\n"
+        f"Loại: {entity_type}\n"
+        f"Thuộc tính: {attrs_str}\n"
+        f"Các sự kiện / quan hệ liên quan:\n{facts_block}\n\n"
+        "Hãy viết đoạn tóm tắt mượt mà theo yêu cầu."
+    )
+
+
+async def _llm_refine_node_summary(
+    http_client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+    name: str,
+    entity_type: str,
+    attributes: dict[str, Any] | None,
+    facts: list[str],
+    fallback: str,
+) -> str:
+    """Ask the LLM to rewrite the node's summary as smooth Vietnamese prose.
+
+    Returns the refined summary on success; falls back to the deterministic
+    summary on any error (network, parsing, empty response, etc.) so the
+    pipeline never blocks on this best-effort enhancement.
+    """
+    if not facts or len(facts) < MIN_FACTS_FOR_LLM_SUMMARY:
+        return fallback
+
+    user_msg = _format_summary_user_prompt(name, entity_type, attributes, facts)
+    async with semaphore:
+        try:
+            resp = await _llm_chat_json_with_retry(
+                http_client,
+                messages=[
+                    {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.3,
+                max_tokens=300,
+            )
+        except Exception as exc:
+            logger.warning(
+                "LLM summary refine failed for %s (%s): %s", name, entity_type, exc
+            )
+            return fallback
+
+    if not isinstance(resp, dict):
+        return fallback
+    refined = (resp.get("summary") or "").strip()
+    if not refined:
+        return fallback
+
+    # Compose with header for consistency with the deterministic format,
+    # then enforce the same length cap.
+    composed = f"{name} ({entity_type}) — {refined}"
+    if len(composed) > NODE_SUMMARY_MAX_CHARS:
+        composed = composed[: NODE_SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+    return composed
+
+
+async def _refine_node_summaries(
+    http_client: httpx.AsyncClient,
+    nodes_by_key: dict[tuple[str, str], dict[str, Any]],
+    facts_by_key: dict[tuple[str, str], list[str]],
+    document_key: tuple[str, str],
+) -> None:
+    """Refine `summary` for every entity node concurrently. Mutates in place."""
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUMMARIES)
+    targets = [k for k in nodes_by_key.keys() if k != document_key]
+    if not targets:
+        return
+
+    async def _one(key: tuple[str, str]) -> tuple[tuple[str, str], str]:
+        name, etype = key
+        node = nodes_by_key[key]
+        deterministic = node.get("summary") or _build_node_summary(
+            name, etype, node.get("attributes") or {}, facts_by_key.get(key, [])
+        )
+        refined = await _llm_refine_node_summary(
+            http_client,
+            semaphore,
+            name,
+            etype,
+            node.get("attributes") or {},
+            facts_by_key.get(key, []),
+            fallback=deterministic,
+        )
+        return key, refined
+
+    results = await asyncio.gather(
+        *[_one(k) for k in targets], return_exceptions=True
+    )
+    for item in results:
+        if isinstance(item, Exception):
+            logger.warning("Summary refinement task crashed: %s", item)
+            continue
+        key, refined = item
+        if refined:
+            nodes_by_key[key]["summary"] = refined
+
+
+# ---------------------------------------------------------------------------
 # Text splitting (with overlap)
 # ---------------------------------------------------------------------------
 
@@ -674,6 +812,7 @@ def _split_content(
 
 async def _upsert_nodes_edges(
     session: AsyncSession,
+    http_client: httpx.AsyncClient,
     doc_file: File,
     extracted: dict[str, Any],
 ) -> tuple[int, int]:
@@ -787,6 +926,17 @@ async def _upsert_nodes_edges(
             etype,
             node.get("attributes") or {},
             facts_by_key.get(key, []),
+        )
+
+    # Optional: ask the LLM to rewrite each node's summary as smooth prose.
+    # This is a best-effort pass — any failure simply keeps the deterministic
+    # summary built above.
+    if ENABLE_LLM_SUMMARY_REFINEMENT:
+        await _refine_node_summaries(
+            http_client,
+            nodes_by_key,
+            facts_by_key,
+            document_key=(file_name, "Document"),
         )
 
     node_values = list(nodes_by_key.values())
@@ -1031,6 +1181,7 @@ async def _process_single_file(
 
     total_nodes, total_edges = await _upsert_nodes_edges(
         session,
+        http_client,
         doc_file,
         merged,
     )
