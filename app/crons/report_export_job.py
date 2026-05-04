@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import csv
-import codecs
+import json as _json
 
 import docx as _docx
 import openpyxl
@@ -25,7 +25,7 @@ from app.core.logger import get_logger
 from app.domain.models.file import File as FileModel
 from app.domain.models.report import Report, ReportStatusEnum
 from app.domain.models.report_document import ReportDocument, ReportDocumentStatus
-from app.domain.models.report_template import FrequencyEnum, ReportTemplate
+from app.domain.models.report_template import FileModeEnum, FrequencyEnum, ReportTemplate
 from app.domain.models.user import User
 from app.infrastructure.services.template_extraction_multi_files_service import (
     TemplateExtractionMultiFilesService,
@@ -273,20 +273,35 @@ async def _get_visible_files(
             )
         ]
 
-    date_filter = []
-    if period_start:
-        date_filter.append(FileModel.created_at >= datetime.combine(period_start, time.min))
-    if period_end:
-        date_filter.append(
-            FileModel.created_at < datetime.combine(period_end + timedelta(days=1), time.min)
+    period_filter = []
+    if period_start or period_end:
+        ps = period_start or date.min
+        pe = period_end or date.max
+
+        created_at_cond = and_(
+            *([FileModel.created_at >= datetime.combine(ps, time.min)] if period_start else []),
+            *([FileModel.created_at < datetime.combine(pe + timedelta(days=1), time.min)] if period_end else []),
         )
+
+        # Also match files whose listed_timeline contains any ISO date within the period.
+        # LEFT(tl, 10) isolates the date portion in case the string has extra characters.
+        timeline_overlap = sa_text(
+            "EXISTS ("
+            "  SELECT 1 FROM unnest(files.listed_timeline) AS tl"
+            "  WHERE tl ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'"
+            "    AND LEFT(tl, 10)::date >= :tl_start"
+            "    AND LEFT(tl, 10)::date <= :tl_end"
+            ")"
+        ).bindparams(tl_start=ps, tl_end=pe)
+
+        period_filter = [or_(created_at_cond, timeline_overlap)]
 
     base_cond = and_(
         or_(FileModel.is_deleted == False, FileModel.is_deleted == None),
         FileModel.content.isnot(None),
         FileModel.content != "",
         *visibility_filter,
-        *date_filter,
+        *period_filter,
     )
 
     result = await session.execute(
@@ -299,6 +314,27 @@ async def _get_visible_files(
             seen_names.add(f.name)
             unique_files.append(f)
     return unique_files
+
+
+async def _get_files_for_template(
+    session: AsyncSession,
+    template: ReportTemplate,
+    user_id: int,
+    user_role_id: int,
+    period_start: Optional[date],
+    period_end: Optional[date],
+) -> List[FileModel]:
+    if template.file_mode == FileModeEnum.SELECT and template.file_ids:
+        result = await session.execute(
+            select(FileModel).where(
+                FileModel.id.in_(template.file_ids),
+                or_(FileModel.is_deleted == False, FileModel.is_deleted == None),
+                FileModel.content.isnot(None),
+                FileModel.content != "",
+            ).order_by(FileModel.created_at.desc())
+        )
+        return list(result.scalars().all())
+    return await _get_visible_files(session, user_id, user_role_id, period_start, period_end)
 
 
 # ── Docx generation ───────────────────────────────────────────────────────────
@@ -476,7 +512,6 @@ Extract information from INPUT TEXT into structured Markdown following the templ
         msg = f"[ReportExport] Extraction result — processed={result.processed_files} failed={result.failed_files} warnings={result.warnings}"
         logger.info(msg)
         print(msg)
-        import json as _json
         summary_dump = _json.dumps(result.final_json, ensure_ascii=False, indent=2)
         msg = f"[ReportExport] final_json:\n{summary_dump}"
         logger.info(msg)
@@ -576,8 +611,19 @@ async def _run_for_frequency(frequency: FrequencyEnum) -> None:
                 period_start = template.start_date or today
                 period_end = template.end_date or today
                 span = (period_end - period_start).days
+                # Always enforce creation_time gate.
+                # Only enforce the frequency day-of-week/month gate when the
+                # window is large enough to form a full cycle.
+                ct = template.creation_time
+                if ct and now_time < ct:
+                    msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) skipped: creation_time {ct} not yet reached (now={now_time})"
+                    logger.info(msg)
+                    print(msg)
+                    continue
                 if span >= _MIN_WINDOW_DAYS.get(frequency, 1):
-                    if not _should_run_today(template, today, now_time):
+                    # creation_time already checked above; pass time.max so
+                    # _should_run_today's internal time gate always passes.
+                    if not _should_run_today(template, today, time.max):
                         continue
 
             # Idempotency: skip if a report for this period already exists
@@ -612,8 +658,8 @@ async def _run_for_frequency(frequency: FrequencyEnum) -> None:
                 print(msg)
                 continue
 
-            files = await _get_visible_files(
-                session, user_row.id, user_row.role_id, period_start, period_end
+            files = await _get_files_for_template(
+                session, template, user_row.id, user_row.role_id, period_start, period_end
             )
             if not files:
                 msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) — no files in {period_start}→{period_end}, skipping"

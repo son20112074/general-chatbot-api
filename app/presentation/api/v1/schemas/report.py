@@ -1,5 +1,5 @@
 from datetime import date, datetime, time
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -14,6 +14,8 @@ class ReportTemplateCreate(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_indefinite: bool = True
+    file_mode: Literal["select", "by_period"] = "by_period"
+    file_ids: Optional[List[int]] = None
 
     @field_validator("creation_time")
     @classmethod
@@ -31,6 +33,8 @@ class ReportTemplateUpdate(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_indefinite: Optional[bool] = None
+    file_mode: Optional[Literal["select", "by_period"]] = None
+    file_ids: Optional[List[int]] = None
 
     @field_validator("creation_time")
     @classmethod
@@ -49,6 +53,8 @@ class ReportTemplateResponse(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_indefinite: bool
+    file_mode: str = "by_period"
+    file_ids: Optional[List[int]] = None
     created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime
