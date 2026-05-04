@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -170,9 +170,7 @@ class ReportService:
         return rows
 
     async def remove_documents(self, report_id: int) -> None:
-        result = await self.db.execute(
-            select(ReportDocument).where(ReportDocument.report_id == report_id)
+        await self.db.execute(
+            delete(ReportDocument).where(ReportDocument.report_id == report_id)
         )
-        for row in result.scalars().all():
-            await self.db.delete(row)
         await self.db.commit()
