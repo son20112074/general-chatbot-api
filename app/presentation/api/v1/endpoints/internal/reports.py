@@ -49,7 +49,7 @@ def _assert_report_owner(report, user_id: int) -> None:
 
 # ── Report Templates ──────────────────────────────────────────────────────────
 
-@router.get("/templates", response_model=List[ReportTemplateResponse], tags=["Report Templates"])
+@router.get("/templates", response_model=List[ReportTemplateResponse])
 async def list_templates(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
@@ -59,7 +59,7 @@ async def list_templates(
     return [ReportTemplateResponse.model_validate(t) for t in templates]
 
 
-@router.post("/templates", response_model=ReportTemplateResponse, status_code=status.HTTP_201_CREATED, tags=["Report Templates"])
+@router.post("/templates", response_model=ReportTemplateResponse, status_code=status.HTTP_201_CREATED)
 async def create_template(
     data: ReportTemplateCreate,
     db: AsyncSession = Depends(get_db),
@@ -73,7 +73,7 @@ async def create_template(
     return ReportTemplateResponse.model_validate(template)
 
 
-@router.get("/templates/{template_id}", response_model=ReportTemplateResponse, tags=["Report Templates"])
+@router.get("/templates/{template_id}", response_model=ReportTemplateResponse)
 async def get_template(
     template_id: int,
     db: AsyncSession = Depends(get_db),
@@ -87,7 +87,7 @@ async def get_template(
     return ReportTemplateResponse.model_validate(template)
 
 
-@router.put("/templates/{template_id}", response_model=ReportTemplateResponse, tags=["Report Templates"])
+@router.put("/templates/{template_id}", response_model=ReportTemplateResponse)
 async def update_template(
     template_id: int,
     data: ReportTemplateUpdate,
@@ -106,7 +106,7 @@ async def update_template(
     return ReportTemplateResponse.model_validate(template)
 
 
-@router.delete("/templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Report Templates"])
+@router.delete("/templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_template(
     template_id: int,
     db: AsyncSession = Depends(get_db),
