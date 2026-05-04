@@ -9,10 +9,12 @@ import asyncio
 import logging
 import sys
 import os
+import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import time
 from datetime import datetime
+import requests
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -69,16 +71,33 @@ class FileProcessingJob:
     async def process_single_file(self, file: File) -> Dict[str, Any]:
         """Process a single file and update database."""
         start_time = time.time()  # Record start time for processing duration
+        temp_file_path: Optional[str] = None
         try:
             logger.info(f"Processing file: {file.name} (ID: {file.id})")
             
-            # Check if file exists on disk
-            if not os.path.exists(file.path):
-                raise FileNotFoundError(f"File not found on disk: {file.path}")
+            # Download file from storage public URL (MinIO gateway) to a temp file.
+            if not file.path:
+                raise ValueError("File path is empty")
+
+            file_url = (
+                str(file.path)
+                if str(file.path).startswith(("http://", "https://"))
+                else f"{settings.STORAGE_PUBLIC_URL.rstrip('/')}/{str(file.path).lstrip('/')}"
+            )
+            logger.info(f"Downloading file from URL: {file_url}")
+
+            file_suffix = file.extension or Path(str(file.path)).suffix
+            with requests.get(file_url, stream=True, timeout=60) as response:
+                response.raise_for_status()
+                with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as temp_file:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            temp_file.write(chunk)
+                    temp_file_path = temp_file.name
             
             # Parse file using the parser
             logger.info(f"Parsing file with extension: {file.extension}")
-            result = self.parser.parse_file(file.path, file.extension)
+            result = self.parser.parse_file(temp_file_path, file.extension)
             
             # Check if parsing was successful
             if not result.get('success', True):  # Default to True for backward compatibility
@@ -107,7 +126,7 @@ class FileProcessingJob:
             
             # Log metadata extraction result
             if metadata:
-                logger.info(f"🏷️ Metadata extracted for {file.name}: {len(metadata.get('listed_nation', []))} countries, {len(metadata.get('listed_technology', []))} technologies, {len(metadata.get('listed_company', []))} companies, {len(metadata.get('important_news', []))} news items")
+                logger.info(f"🏷️ Metadata extracted for {file.name}: {len(metadata.get('listed_nation', []))} countries, {len(metadata.get('listed_technology', []))} technologies, {len(metadata.get('listed_company', []))} companies, {len(metadata.get('important_news', []))} news items, {len(metadata.get('listed_timeline', []))} timeline items")
             else:
                 logger.info(f"ℹ️ No metadata available for {file.name} - will be stored as empty arrays")
             
@@ -150,6 +169,12 @@ class FileProcessingJob:
                 "error": str(e),
                 "processing_duration": processing_duration
             }
+        finally:
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to remove temp file {temp_file_path}: {cleanup_error}")
     
     def _clean_content(self, content: str) -> str:
         """Clean content by decoding UTF-8 and removing null bytes."""
@@ -308,7 +333,8 @@ class FileProcessingJob:
                 "listed_nation": metadata.get("listed_nation", []) if metadata else [],
                 "listed_technology": metadata.get("listed_technology", []) if metadata else [],
                 "listed_company": metadata.get("listed_company", []) if metadata else [],
-                "important_news": metadata.get("important_news", []) if metadata else []
+                "important_news": metadata.get("important_news", []) if metadata else [],
+                "listed_timeline": metadata.get("listed_timeline", []) if metadata else []
             })
             
             # Update file record
@@ -399,7 +425,7 @@ async def main():
     # Run the job
     while True:
         await run_processing_job()
-        time.sleep(10)
+        time.sleep(1)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
-from app.domain.models.task_work import TaskWork
+# from app.domain.models.task_work import TaskWork
 from app.domain.schemas.task_work import TaskWorkFilter, TaskWorkResponse, TaskWorkListResponse
 
 class TaskWorkService:

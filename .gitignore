@@ -64,3 +64,9 @@ temp/
 Thumbs.db
 
 static/
+
+# Internal design docs / specs / plans (not part of the shipped API docs)
+docs/
+*.log
+*.log*
+logs/*

@@ -50,14 +50,18 @@ class FileService:
             return data
         return {k: v for k, v in data.items() if k in fields}
 
-    async def save_file(self, file: UploadFile, user_id: int, fields: Optional[List[str]] = None, is_save: bool = True) -> dict:
+    async def save_file(self, file: UploadFile, user_id: int, fields: Optional[List[str]] = None, is_save: bool = True,
+                        folder_id: int = None, role_id: int = None, file_type: str = "private") -> dict:
         """Save file and return file metadata
-        
+
         Args:
             file: The file to upload
             user_id: ID of the user uploading the file
             fields: Optional list of fields to include in response
             is_save: If True, save to database. If False, only save to disk.
+            folder_id: Optional folder to place the file in
+            role_id: Optional role to pin the file to (for organization type)
+            file_type: File type - private, organization, or general
         """
         # Calculate file hash and combine with user_id for per-user uniqueness
         file_hash = await self.calculate_file_hash(file)
@@ -95,7 +99,7 @@ class FileService:
 
         # Check if file already exists in database (combined_hash is unique per user)
         existing_file = await self.session.execute(
-            select(File).where(File.hash == combined_hash)
+            select(File).where(File.hash == combined_hash, File.is_deleted == False)
         )
         existing_file = existing_file.scalar_one_or_none()
 
@@ -111,6 +115,36 @@ class FileService:
             file_dict["url"] = f"/api/v1/static/uploads/{os.path.relpath(file_path, 'static/uploads')}"
             return self._filter_fields(file_dict, fields)
 
+        # Compute node_path
+        from app.domain.services.folder_service import compute_node_path
+        from app.domain.models.role import Role
+        from app.domain.models.folder import Folder as FolderModel
+
+        role_parent_path = None
+        folder_parent_path = None
+        actual_role_id = role_id if file_type == "organization" else None
+
+        if actual_role_id:
+            rr = await self.session.execute(select(Role.parent_path).where(Role.id == actual_role_id))
+            row = rr.first()
+            if row:
+                role_parent_path = row[0]
+
+        if folder_id:
+            fr = await self.session.execute(select(FolderModel.parent_path).where(FolderModel.id == folder_id))
+            row = fr.first()
+            if row:
+                folder_parent_path = row[0]
+
+        node_path = compute_node_path(
+            file_type=file_type,
+            role_id=actual_role_id,
+            role_parent_path=role_parent_path,
+            user_id=user_id,
+            folder_id=folder_id,
+            folder_parent_path=folder_parent_path,
+        )
+
         # Create new file record
         new_file = File(
             name=file_name,
@@ -119,7 +153,11 @@ class FileService:
             path=file_path,
             extension=file_extension,
             mime_type=mime_type,
-            created_by=user_id
+            created_by=user_id,
+            folder_id=folder_id,
+            role_id=actual_role_id,
+            type=file_type,
+            node_path=node_path,
         )
 
         self.session.add(new_file)

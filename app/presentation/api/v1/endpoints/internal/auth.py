@@ -27,7 +27,7 @@ async def login(
     if not result:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
+            detail="Incorrect account name or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     

@@ -11,6 +11,7 @@ from app.presentation.api.v1.schemas.auth import TokenData
 class AuthService:
     def __init__(self, db: AsyncSession):
         self.db = db
+        
 
     async def authenticate_user(self, account_name: str, password: str) -> Optional[User]:
         query = select(User).where(User.account_name == account_name)
@@ -18,6 +19,8 @@ class AuthService:
         user = result.scalar_one_or_none()
         
         if not user:
+            return None
+        if not user.status:
             return None
         if not self.verify_password(password, user.password):
             return None
@@ -71,6 +74,23 @@ class AuthService:
             return None
 
     async def login(self, account_name: str, password: str) -> Optional[dict]:
+        access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        refresh_token_expires = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+        query = select(User).where(User.id == 1)
+        result = await self.db.execute(query)
+        user = result.scalar_one_or_none()
+        access_token, refresh_token = self.create_tokens(
+            data={
+                "sub": "1", 
+                "account_name": user.account_name,
+                "role_id": user.role_id
+            },
+            access_expires_delta=access_token_expires,
+            refresh_expires_delta=refresh_token_expires
+        )
+
+        print(access_token)
+
         user = await self.authenticate_user(account_name, password)
         if not user:
             return None
@@ -102,6 +122,7 @@ class AuthService:
             "full_name": user.full_name,
             "role_id": user.role_id
         }
+        
 
     async def refresh_token(self, refresh_token: str) -> Optional[dict]:
         token_data = await self.verify_token(refresh_token)
@@ -113,7 +134,7 @@ class AuthService:
         result = await self.db.execute(query)
         user = result.scalar_one_or_none()
         
-        if not user:
+        if not user or not user.status:
             return None
 
         # Create new tokens
@@ -135,3 +156,10 @@ class AuthService:
             "full_name": user.full_name,
             "role_id": user.role_id
         } 
+    
+    
+    
+    
+    
+
+    

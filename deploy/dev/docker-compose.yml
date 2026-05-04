@@ -1,0 +1,34 @@
+# Top-level project name locks compose to the same -p regardless of which folder
+# `docker-compose` is invoked from (deploy/ vs deploy/dev/) — ensures `down`
+# tears down resources created by deploy.sh's matching -p.
+name: chatbot-api-dev
+
+services:
+  chatbot-api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: ${IMAGE_NAME:-chatbot-api-dev}:${IMAGE_TAG:-latest}
+    container_name: chatbot-api-dev
+    # Host port 8000 matches the existing nginx reverse-proxy config
+    # at /etc/nginx/sites-enabled/default (location / → localhost:8000).
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../..:/app
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # depends_on:
+    #   - db
+    #   - redis
+    #   - mqtt-broker
+    networks:
+      - chatbot-shared
+    restart: unless-stopped
+
+networks:
+  chatbot-shared:
+    external: true
+    name: chatbot-shared

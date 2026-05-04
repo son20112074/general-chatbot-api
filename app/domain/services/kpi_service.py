@@ -4,9 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, and_, select, any_
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.sql import text
-from app.domain.models.kpi import EmployeeKPI
-from app.domain.models.task import Task
-from app.domain.models.task_work import TaskWork
+# from app.domain.models.kpi import EmployeeKPI
+# from app.domain.models.task import Task
+# from app.domain.models.task_work import TaskWork
 from app.domain.models.user import User
 from app.domain.models.role import Role
 from app.domain.schemas.kpi import EmployeeKPICreate, EmployeeKPIUpdate, EmployeeKPIFilter, KPISummaryRequest, KPISummaryItem, UserInfo, SelfAssessmentRequest, ManagerAssessmentRequest, RoleKPISummaryRequest, RoleKPISummaryItem
@@ -15,7 +15,7 @@ class KPIService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def create_kpi(self, kpi_data: EmployeeKPICreate) -> EmployeeKPI:
+    async def create_kpi(self, kpi_data: EmployeeKPICreate) -> any:
         """Tạo KPI mới cho nhân viên"""
         db_kpi = EmployeeKPI(**kpi_data.dict())
         self.db.add(db_kpi)
@@ -419,10 +419,11 @@ class KPIService:
         # Query để tìm tất cả role có parent_path chứa role_id hiện tại
         # Bao gồm cả role hiện tại và tất cả role con
         role_query = text("""
-            SELECT * FROM roles 
-            WHERE id = :parent_role_id
-            OR parent_path LIKE :exact_path 
-            OR parent_path LIKE :anywhere_path 
+            SELECT * FROM roles
+            WHERE (id = :parent_role_id
+            OR parent_path LIKE :exact_path
+            OR parent_path LIKE :anywhere_path)
+            AND is_deleted = false
             ORDER BY parent_path ASC
         """)
         

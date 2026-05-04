@@ -1,110 +1,41 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Body
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_, or_
+from app.core.config import settings
 from app.core.database import Base, get_db
 from app.core.file_service import FileService
 from app.core.query import CursorPaginationResult, QueryInput
 from app.domain.services.file_service import FileQueryService
+from app.domain.models.file import File as FileModel
+from app.domain.models.user import User
 from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.auth import TokenData
+from app.presentation.api.v1.schemas.file import (
+    ExtractFileContentRequest, ExtractFileContentResponse,
+    FileDashboardResponse, PeriodStatsRequest, PeriodStatsResponse,
+    CountryTechStatsRequest, CountryTechStatsResponse,
+    FileUpdateSchema, FileMoveSchema, FileListAllSchema,
+)
 from app.utils.table_lookup import get_table_with_schema
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
-from datetime import datetime, timedelta
-from dateutil import parser as date_parser
+from app.utils.helpers import check_file_permission, compute_and_set_node_path, build_file_item, parse_datetime_safe
+from typing import List, Optional
+from datetime import datetime
+
 import os
+from pathlib import Path
+import tempfile
 import docx
 import openpyxl
 import csv
 import codecs
+import requests
+from parser.pdf_parser import PDFParser
+
+ADMIN_ROLE_ID = settings.ADMIN_ROLE_ID
 
 router = APIRouter()
 
-def parse_datetime_safe(datetime_str: str) -> datetime:
-    """
-    Parse datetime string and convert to timezone-naive datetime.
-    
-    Args:
-        datetime_str: Datetime string to parse
-        
-    Returns:
-        timezone-naive datetime object
-        
-    Raises:
-        ValueError: If datetime string is invalid
-    """
-    try:
-        parsed_time = date_parser.parse(datetime_str)
-        # Convert to timezone-naive datetime if it has timezone info
-        if parsed_time.tzinfo is not None:
-            return parsed_time.replace(tzinfo=None)
-        else:
-            return parsed_time
-    except Exception as e:
-        raise ValueError(f"Invalid datetime format: {str(e)}")
-
-# Request/Response schemas for extract-file-content endpoint
-class ExtractFileContentRequest(BaseModel):
-    file_path: str = Field(..., description="Đường dẫn đến file cần trích xuất nội dung")
-
-class ExtractFileContentResponse(BaseModel):
-    file_path: str = Field(..., description="Đường dẫn file")
-    file_name: str = Field(..., description="Tên file")
-    file_size: int = Field(..., description="Kích thước file (bytes)")
-    file_extension: str = Field(..., description="Phần mở rộng file")
-    modified_time: str = Field(..., description="Thời gian chỉnh sửa cuối")
-    content: str = Field(..., description="Nội dung được trích xuất")
-    content_length: int = Field(..., description="Độ dài nội dung")
-    success: bool = Field(default=True, description="Trạng thái thành công")
-    message: str = Field(default="Trích xuất nội dung file thành công", description="Thông báo")
-
-# Dashboard response schema
-class FileDashboardResponse(BaseModel):
-    total_files: int = Field(..., description="Tổng số lượng file")
-    total_size: int = Field(..., description="Tổng dung lượng file (bytes)")
-    total_size_mb: float = Field(..., description="Tổng dung lượng file (MB)")
-    processed_files: int = Field(..., description="Số lượng file đã xử lý")
-    unprocessed_files: int = Field(..., description="Số lượng file chưa xử lý")
-    processing_rate: float = Field(..., description="Tỷ lệ xử lý (%)")
-    avg_processing_duration: Optional[float] = Field(None, description="Thời gian xử lý trung bình (giây)")
-    files_by_extension: dict = Field(..., description="Số lượng file theo phần mở rộng")
-    files_by_status: dict = Field(..., description="Số lượng file theo trạng thái xử lý")
-
-# Period statistics request schema
-class PeriodStatsRequest(BaseModel):
-    period: str = Field(..., description="Kỳ thống kê: 'day', 'month', 'quarter', 'year'")
-    from_time: Optional[str] = Field(None, description="Thời gian bắt đầu (YYYY-MM-DD hoặc YYYY-MM-DD HH:MM:SS)")
-    to_time: Optional[str] = Field(None, description="Thời gian kết thúc (YYYY-MM-DD hoặc YYYY-MM-DD HH:MM:SS)")
-
-# Period statistics response schema
-class PeriodStatsResponse(BaseModel):
-    period: str = Field(..., description="Kỳ thống kê")
-    from_time: Optional[str] = Field(None, description="Thời gian bắt đầu")
-    to_time: Optional[str] = Field(None, description="Thời gian kết thúc")
-    total_files: int = Field(..., description="Tổng số lượng file")
-    total_size: int = Field(..., description="Tổng dung lượng file (bytes)")
-    total_size_mb: float = Field(..., description="Tổng dung lượng file (MB)")
-    statistics: List[Dict[str, Any]] = Field(..., description="Thống kê chi tiết theo kỳ")
-    files_by_extension: dict = Field(..., description="Số lượng file theo phần mở rộng")
-    files_by_status: dict = Field(..., description="Số lượng file theo trạng thái xử lý")
-
-# Country and Technology statistics request schema
-class CountryTechStatsRequest(BaseModel):
-    from_time: Optional[str] = Field(None, description="Thời gian bắt đầu (YYYY-MM-DD hoặc YYYY-MM-DD HH:MM:SS)")
-    to_time: Optional[str] = Field(None, description="Thời gian kết thúc (YYYY-MM-DD hoặc YYYY-MM-DD HH:MM:SS)")
-    sort_by: str = Field(default="count", description="Sắp xếp theo: 'count' hoặc 'name'")
-    sort_order: str = Field(default="desc", description="Thứ tự sắp xếp: 'asc' hoặc 'desc'")
-    limit: Optional[int] = Field(None, description="Giới hạn số lượng kết quả trả về")
-
-# Country and Technology statistics response schema
-class CountryTechStatsResponse(BaseModel):
-    from_time: Optional[str] = Field(None, description="Thời gian bắt đầu")
-    to_time: Optional[str] = Field(None, description="Thời gian kết thúc")
-    total_files: int = Field(..., description="Tổng số lượng file trong khoảng thời gian")
-    listed_nations: List[Dict[str, Any]] = Field(..., description="Danh sách quốc gia và số lượng tài liệu")
-    listed_technologies: List[Dict[str, Any]] = Field(..., description="Danh sách công nghệ và số lượng tài liệu")
-    total_nations: int = Field(..., description="Tổng số quốc gia unique")
-    total_technologies: int = Field(..., description="Tổng số công nghệ unique")
-
+# ── Endpoints ────────────────────────────────────────────────
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -137,7 +68,6 @@ async def upload_file(
             detail=f"Error uploading file: {str(e)}"
         ) 
         
-
 @router.post("/my-files", response_model=CursorPaginationResult)
 async def query_with_cursor(
     query_input: QueryInput,
@@ -216,7 +146,6 @@ async def query_files_with_children(
             detail=f"Error executing query: {str(e)}"
         )
 
-
 # File content extraction functions
 def extract_docx_content(file_path: str) -> str:
     """Trích xuất nội dung từ file DOCX"""
@@ -243,7 +172,6 @@ def extract_docx_content(file_path: str) -> str:
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file DOCX: {str(e)}")
 
-
 def extract_doc_content(file_path: str) -> str:
     """Trích xuất nội dung từ file DOC (cần python-docx2txt hoặc antiword)"""
     try:
@@ -256,7 +184,6 @@ def extract_doc_content(file_path: str) -> str:
             return "Cần cài đặt thư viện docx2txt để đọc file DOC"
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file DOC: {str(e)}")
-
 
 def extract_xlsx_content(file_path: str) -> str:
     """Trích xuất nội dung từ file XLSX"""
@@ -278,7 +205,6 @@ def extract_xlsx_content(file_path: str) -> str:
         return "\n".join(content)
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file XLSX: {str(e)}")
-
 
 def extract_text_content(file_path: str) -> str:
     """Trích xuất nội dung từ file TXT hoặc DAT"""
@@ -303,7 +229,6 @@ def extract_text_content(file_path: str) -> str:
             
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file text: {str(e)}")
-
 
 def extract_csv_content(file_path: str) -> str:
     """Trích xuất nội dung từ file CSV"""
@@ -342,6 +267,16 @@ def extract_csv_content(file_path: str) -> str:
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file CSV: {str(e)}")
 
+def extract_pdf_content(file_path: str) -> str:
+    """Trích xuất nội dung từ file PDF bằng PDFParser hiện có."""
+    try:
+        parser = PDFParser()
+        result = parser.parse_pdf(file_path)
+        if not result.get("success"):
+            raise Exception(result.get("error", "Không thể trích xuất nội dung từ file PDF"))
+        return result.get("content", "")
+    except Exception as e:
+        raise Exception(f"Lỗi khi đọc file PDF: {str(e)}")
 
 @router.post("/extract-file-content", response_model=ExtractFileContentResponse)
 async def extract_file_content(
@@ -349,57 +284,100 @@ async def extract_file_content(
     current_user: TokenData = Depends(get_current_user)
 ):
     """
-    API để trích xuất nội dung từ file trong thư mục static
-    Hỗ trợ các định dạng: doc, docx, xlsx, txt, csv, dat
+    API để trích xuất nội dung từ file trên MinIO (public URL)
+    Hỗ trợ các định dạng: doc, docx, xlsx, txt, csv, dat, pdf
     """
+    temp_file_path: Optional[str] = None
     try:
         file_path = request.file_path
-        
-        # Kiểm tra file_path có chứa đường dẫn đầy đủ tới thư mục static
-        if not file_path.startswith('static'):
-            file_path = f"static/{file_path}"
-        
-        # Kiểm tra file có tồn tại không
-        if not os.path.exists(file_path):
-            raise HTTPException(
-                status_code=404,
-                detail=f"File {file_path} không tồn tại"
-            )
+
+        if not file_path:
+            raise HTTPException(status_code=400, detail="file_path không được để trống")
+
+        file_url = (
+            str(file_path)
+            if str(file_path).startswith(("http://", "https://"))
+            else f"{settings.STORAGE_PUBLIC_URL.rstrip('/')}/{str(file_path).lstrip('/')}"
+        )
         
         # Lấy phần mở rộng của file
         file_extension = os.path.splitext(file_path)[1].lower()
         
         # Danh sách các phần mở rộng được hỗ trợ
-        supported_extensions = ['.doc', '.docx', '.xlsx', '.txt', '.csv', '.dat']
+        supported_extensions = ['.doc', '.docx', '.xlsx', '.txt', '.csv', '.dat', '.pdf']
         
         if file_extension not in supported_extensions:
             raise HTTPException(
                 status_code=400,
                 detail=f"Định dạng file {file_extension} không được hỗ trợ. Chỉ hỗ trợ: {', '.join(supported_extensions)}"
             )
-        
+
+        # Download file từ MinIO public URL vào file tạm để tái sử dụng parser hiện có
+        file_size = None
+        modified_time = None
+        try:
+            file_suffix = file_extension or Path(str(file_path)).suffix
+            with requests.get(file_url, stream=True, timeout=60) as response:
+                if response.status_code == 404:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"File {file_path} không tồn tại trên storage"
+                    )
+                response.raise_for_status()
+
+                if response.headers.get("Content-Length"):
+                    try:
+                        file_size = int(response.headers["Content-Length"])
+                    except ValueError:
+                        file_size = None
+
+                if response.headers.get("Last-Modified"):
+                    modified_time = response.headers["Last-Modified"]
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as temp_file:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            temp_file.write(chunk)
+                    temp_file_path = temp_file.name
+        except HTTPException:
+            raise
+        except requests.RequestException as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Không thể tải file từ storage: {str(e)}"
+            )
+
         content = ""
         
         # Trích xuất nội dung dựa trên định dạng file
         if file_extension == '.docx':
-            content = extract_docx_content(file_path)
+            content = extract_docx_content(temp_file_path)
         elif file_extension == '.doc':
-            content = extract_doc_content(file_path)
+            content = extract_doc_content(temp_file_path)
         elif file_extension == '.xlsx':
-            content = extract_xlsx_content(file_path)
+            content = extract_xlsx_content(temp_file_path)
         elif file_extension in ['.txt', '.dat']:
-            content = extract_text_content(file_path)
+            content = extract_text_content(temp_file_path)
         elif file_extension == '.csv':
-            content = extract_csv_content(file_path)
+            content = extract_csv_content(temp_file_path)
+        elif file_extension == '.pdf':
+            content = extract_pdf_content(temp_file_path)
         
         # Lấy thông tin file
-        file_stats = os.stat(file_path)
+        if temp_file_path and (file_size is None or modified_time is None):
+            temp_stats = os.stat(temp_file_path)
+            if file_size is None:
+                file_size = temp_stats.st_size
+            if modified_time is None:
+                modified_time = datetime.fromtimestamp(temp_stats.st_mtime).isoformat()
+
         file_info = {
             "file_path": file_path,
+            "file_url": file_url,
             "file_name": os.path.basename(file_path),
-            "file_size": file_stats.st_size,
+            "file_size": file_size,
             "file_extension": file_extension,
-            "modified_time": datetime.fromtimestamp(file_stats.st_mtime).isoformat(),
+            "modified_time": modified_time,
             "content": content,
             "content_length": len(content)
         }
@@ -413,7 +391,12 @@ async def extract_file_content(
             status_code=500,
             detail=f"Lỗi khi trích xuất nội dung file: {str(e)}"
         )
-
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except Exception:
+                pass
 
 @router.get("/dashboard", response_model=FileDashboardResponse)
 async def get_file_dashboard(
@@ -534,13 +517,12 @@ async def get_file_dashboard(
             detail=f"Lỗi khi lấy thống kê dashboard: {str(e)}"
         )
 
-
 @router.post("/period-stats", response_model=PeriodStatsResponse)
 async def get_period_statistics(
     request: PeriodStatsRequest,
     current_user: TokenData = Depends(get_current_user),
     session: AsyncSession = Depends(get_db)
-):
+): 
     """
     API để lấy thống kê file theo kỳ (ngày, tháng, quý, năm)
     
@@ -716,7 +698,6 @@ async def get_period_statistics(
             detail=f"Lỗi khi lấy thống kê theo kỳ: {str(e)}"
         )
 
-
 @router.post("/country-tech-stats", response_model=CountryTechStatsResponse)
 async def get_country_technology_statistics(
     request: CountryTechStatsRequest,
@@ -888,4 +869,144 @@ async def get_country_technology_statistics(
             detail=f"Lỗi khi lấy thống kê quốc gia và công nghệ: {str(e)}"
         )
 
+@router.get("/detail/{file_id}",
+            summary="Get file detail",
+            description="Get full file detail by ID including all metadata, content, classification, owner info, and node_path.")
+async def get_file_detail(
+    file_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    result = await session.execute(
+        select(FileModel, User.id.label("u_id"), User.full_name.label("u_name"))
+        .outerjoin(User, FileModel.created_by == User.id)
+        .where(and_(FileModel.id == file_id, or_(FileModel.is_deleted == False, FileModel.is_deleted == None)))
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="File not found")
+    data = row[0].to_dict()
+    data["owner"] = {"id": row.u_id, "full_name": row.u_name} if row.u_id else None
+    return data
+
+@router.put("/update/{file_id}",
+            summary="Update file name",
+            description="Only the creator or admin (role_id=1) can update.")
+async def update_file(
+    file_id: int,
+    data: FileUpdateSchema,
+    current_user: TokenData = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    result = await session.execute(
+        select(FileModel).where(and_(FileModel.id == file_id, or_(FileModel.is_deleted == False, FileModel.is_deleted == None)))
+    )
+    file_obj = result.scalar_one_or_none()
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        check_file_permission(file_obj, current_user.user_id, current_user.role_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if data.name is not None:
+        file_obj.name = data.name
+    await session.commit()
+    await session.refresh(file_obj)
+    return file_obj.to_dict()
+
+@router.delete("/delete/{file_id}", status_code=204,
+               summary="Soft delete a file",
+               description="Only the creator or admin (role_id=1) can delete.")
+async def delete_file(
+    file_id: int,
+    current_user: TokenData = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    result = await session.execute(
+        select(FileModel).where(and_(FileModel.id == file_id, or_(FileModel.is_deleted == False, FileModel.is_deleted == None)))
+    )
+    file_obj = result.scalar_one_or_none()
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        check_file_permission(file_obj, current_user.user_id, current_user.role_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    file_obj.is_deleted = True
+    await session.commit()
+
+@router.put("/move/{file_id}",
+            summary="Move file to another folder",
+            description="Re-computes node_path. Only the creator or admin can move.")
+async def move_file(
+    file_id: int,
+    data: FileMoveSchema,
+    current_user: TokenData = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    result = await session.execute(
+        select(FileModel).where(and_(FileModel.id == file_id, or_(FileModel.is_deleted == False, FileModel.is_deleted == None)))
+    )
+    file_obj = result.scalar_one_or_none()
+    if not file_obj:
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        check_file_permission(file_obj, current_user.user_id, current_user.role_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    file_obj.folder_id = data.new_folder_id
+    await compute_and_set_node_path(session, file_obj)
+    await session.commit()
+    await session.refresh(file_obj)
+    return file_obj.to_dict()
+
+@router.post("/list-all",
+             summary="Get all accessible files (flat list)",
+             description="""Returns files the current user is allowed to see, sorted by created_at DESC.
+
+**Visibility rules:**
+- Own files (created_by = current user)
+- Files from subordinate roles (child roles in hierarchy)
+- Admin (role_id=1) sees all files
+- Does NOT show files from other users at the same role level
+- Private files only visible to their creator (admin sees all)
+
+**Subtree filter (`started_node` + `type_node`):** both must be sent together.
+Matches files whose `node_path` contains the segment `<type_node>_<started_node>`.
+Recursive — any file anywhere below that node is returned.
+
+- `started_node=4, type_node="folder"` → files with node_path containing `folder_4/`
+- `started_node=3, type_node="role"`   → files under role 3 subtree
+- `started_node=5, type_node="user"`   → files owned by user 5 in their user-node
+
+**Search (`search_text`):** case-insensitive OR across file name, containing folder name,
+owner full_name, and pinned role name.
+
+**Filters:** `type`, `owner_name`, `is_processed`. All optional.
+
+**`is_processed`:**
+- `true` → only processed files
+- `false` → only failed files
+- omit or `null` → all files (no filter)
+
+**Sort (`sort_by` + `sort_order`):** supports single or multi-field sorting.
+Fields: `created_at` (default), `size`. Direction: `desc` (default), `asc`.
+
+- Single: `"sort_by": "size", "sort_order": "asc"`
+- Multi: `"sort_by": "size,created_at", "sort_order": "asc,desc"` → ORDER BY size ASC, created_at DESC
+- If fewer sort_order values than sort_by, the last direction is reused.""")
+async def list_all_files(
+    query_params: FileListAllSchema,
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    service = FileQueryService(db)
+    try:
+        result = await service.query_files(query_params, current_user.user_id, current_user.role_id)
+        return {
+            "data": result["data"],
+            "total": result["total"],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
 

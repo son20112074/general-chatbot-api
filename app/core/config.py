@@ -20,18 +20,37 @@ class Settings(BaseSettings):
     DB_SCHEMA: str = "public"
 
     # JWT settings
-    SECRET_KEY: str = "4404229d1f3b6470a1b55b791dadb7035c9be77ac2d8dafcf9b25ff76cea8cef"
+    SECRET_KEY: str 
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours (increased from 30 minutes)
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30  # 30 days (increased from 7 days)
 
     LLM_API: str = "https://api.openai.com/v1"
+    OPENAI_API_KEY: Optional[str] = None
+    LLM_MODEL: str = "openai/gpt-oss-20b"
 
     # PaddleOCR-VL: optional vLLM server URL (e.g. ngrok). If set, image parser uses this instead of local model.
     PADDLEOCR_VL_SERVER_URL: Optional[str] = None
 
+    # Admin role
+    ADMIN_ROLE_ID: int = 1
+
+    # Storage (MinIO)
+    STORAGE_PUBLIC_URL: str = "http://localhost:9002"
+    STORAGE_BUCKET_NAME: str = "media-bucket"
+
     # Content processing limits
     CONTENT_LIMIT: int = 20000  # Maximum content length for API processing
+
+    # Topic classification
+    TOPIC_CLASSIFY_INTERVAL_SECONDS: int = 30
+    TOPIC_CLASSIFY_BATCH_SIZE: int = 5
+    TOPIC_CLASSIFY_MAX_RETRIES: int = 3
+    TOPIC_CLASSIFY_MAX_CONTENT_CHARS: int = 16000
+    # Per-pair (file_id, topic_id)
+    TOPIC_CLASSIFY_PAIR_MAX_RETRIES: int = 3
+    TOPIC_CLASSIFY_LLM_RATE_LIMIT_RETRIES: int = 3
+    TOPIC_CLASSIFY_LLM_RATE_LIMIT_MAX_SLEEP_SECONDS: int = 30
 
     # Add these settings to your Settings class
     REDIS_HOST: str = "localhost"

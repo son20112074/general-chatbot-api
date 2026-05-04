@@ -1,19 +1,32 @@
 import uvicorn
 import threading
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import asyncio
 from app.core.database import engine, Base
+from app.core.errors import AppError, app_error_handler, http_exception_to_app
 from app.presentation.api.v1.router import router
 from app.core.logger import setup_logging
+setup_logging()
+from app.crons import start_scheduler, stop_scheduler
 import multiprocessing
 import os
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_scheduler()
+    yield
+    stop_scheduler()
+
 
 app = FastAPI(
     title="TMS API Service",
     description="A task management system API service",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Configure CORS
@@ -24,6 +37,10 @@ app.add_middleware(
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
 )
+
+# Structured error responses — {detail, message, code, status}
+app.add_exception_handler(AppError, app_error_handler)
+app.add_exception_handler(HTTPException, http_exception_to_app)
 
 # Create static directory and subdirectories if they don't exist
 def create_static_directories():

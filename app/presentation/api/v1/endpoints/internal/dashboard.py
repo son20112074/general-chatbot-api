@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_
 from app.core.database import get_db
-from app.domain.models.task import Task
-from app.domain.models.task_work import TaskWork
+# from app.domain.models.task import Task
+# from app.domain.models.task_work import TaskWork
 from app.domain.models.user import User
 from app.domain.models.role import Role
 from app.presentation.api.dependencies import get_current_user
@@ -31,10 +31,11 @@ class DashboardService:
         
         # Get all child role IDs based on the current user's role hierarchy
         child_roles_query = text("""
-            SELECT r.id 
-            FROM roles r 
-            WHERE r.parent_path ILIKE :exact_path 
-            OR r.parent_path ILIKE :anywhere_path
+            SELECT r.id
+            FROM roles r
+            WHERE (r.parent_path ILIKE :exact_path
+            OR r.parent_path ILIKE :anywhere_path)
+            AND r.is_deleted = false
         """)
         
         child_roles_result = await self.session.execute(
