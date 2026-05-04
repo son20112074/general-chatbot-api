@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,14 +49,21 @@ def _assert_report_owner(report, user_id: int) -> None:
 
 # ── Report Templates ──────────────────────────────────────────────────────────
 
-@router.get("/templates", response_model=List[ReportTemplateResponse])
+@router.get("/templates", response_model=Dict)
 async def list_templates(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     service = ReportService(db)
-    templates = await service.list_templates(created_by=current_user.user_id)
-    return [ReportTemplateResponse.model_validate(t) for t in templates]
+    result = await service.list_templates(created_by=current_user.user_id, page=page, page_size=page_size)
+    return {
+        "data": [ReportTemplateResponse.model_validate(t) for t in result["data"]],
+        "total": result["total"],
+        "page": result["page"],
+        "page_size": result["page_size"],
+    }
 
 
 @router.post("/templates", response_model=ReportTemplateResponse, status_code=status.HTTP_201_CREATED)
