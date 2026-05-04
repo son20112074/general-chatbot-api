@@ -49,12 +49,26 @@ class ReportService:
         )
         return result.scalar_one_or_none()
 
-    async def list_templates(self, created_by: Optional[int] = None) -> List[ReportTemplate]:
-        stmt = select(ReportTemplate)
+    async def list_templates(
+        self, created_by: Optional[int] = None, page: int = 1, page_size: int = 20
+    ) -> Dict[str, Any]:
+        base_filter = []
         if created_by is not None:
-            stmt = stmt.where(ReportTemplate.created_by == created_by)
-        result = await self.db.execute(stmt.order_by(ReportTemplate.created_at.desc()))
-        return list(result.scalars().all())
+            base_filter.append(ReportTemplate.created_by == created_by)
+
+        total_result = await self.db.execute(
+            select(func.count()).select_from(ReportTemplate).where(*base_filter)
+        )
+        total = total_result.scalar_one()
+
+        result = await self.db.execute(
+            select(ReportTemplate)
+            .where(*base_filter)
+            .order_by(ReportTemplate.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        return {"data": list(result.scalars().all()), "total": total, "page": page, "page_size": page_size}
 
     async def update_template(
         self, template_id: int, data: ReportTemplateUpdate
