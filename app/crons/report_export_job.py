@@ -261,11 +261,7 @@ async def _get_visible_files(
             or_(
                 FileModel.type == "general",
                 and_(FileModel.type == "private", FileModel.created_by == user_id),
-                and_(
-                    FileModel.type == "organization",
-                    FileModel.role_id == user_role_id,
-                    FileModel.created_by == user_id,
-                ),
+                and_(FileModel.type == "organization", FileModel.role_id == user_role_id),
                 *(
                     [and_(FileModel.type == "organization", FileModel.role_id.in_(child_role_ids))]
                     if child_role_ids else []
@@ -364,11 +360,6 @@ def _build_docx(template_name: str, final_json: Dict[str, Any]) -> bytes:
             data = f.read()
     finally:
         os.unlink(tmp_path)
-
-    safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in template_name)
-    local_path = Path(f"report_{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx")
-    local_path.write_bytes(data)
-    print(f"[ReportExport] Docx saved locally → {local_path.resolve()}")
 
     return data
 
@@ -720,7 +711,7 @@ async def test_report_export_weekly() -> None:
                 print(msg)
                 return
 
-            msg = f"[TestReportExport] Using {len(files)} file(s) (latest 3) — starting extraction"
+            msg = f"[TestReportExport] Using {len(files)} file(s) (latest 2) — starting extraction"
             logger.info(msg)
             print(msg)
 
