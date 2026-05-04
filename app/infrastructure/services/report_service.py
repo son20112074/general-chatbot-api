@@ -6,7 +6,7 @@ from sqlalchemy.orm import selectinload
 
 from app.domain.models.report import Report, ReportStatusEnum
 from app.domain.models.report_document import ReportDocument
-from app.domain.models.report_template import FrequencyEnum, ReportTemplate
+from app.domain.models.report_template import FileModeEnum, FrequencyEnum, ReportTemplate
 from app.presentation.api.v1.schemas.report import (
     ReportTemplateCreate,
     ReportTemplateUpdate,
@@ -30,11 +30,12 @@ class ReportService:
             name=data.name,
             description=data.description,
             frequency=FrequencyEnum(data.frequency),
-            creation_day=data.creation_day,
             creation_time=data.creation_time,
             start_date=data.start_date,
             end_date=data.end_date,
             is_indefinite=data.is_indefinite,
+            file_mode=FileModeEnum(data.file_mode),
+            file_ids=data.file_ids or None,
             created_by=created_by,
         )
         self.db.add(template)
