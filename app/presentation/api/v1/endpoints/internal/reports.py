@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -134,6 +135,8 @@ async def list_reports(
     q: Optional[str] = Query(None, description="Search by report name"),
     status_filter: Optional[str] = Query(None, alias="status", description="compiling | completed | failed"),
     template_id: Optional[int] = Query(None),
+    start_date: Optional[date] = Query(None, description="Filter by start date (report created_at or document listed_timeline)"),
+    end_date: Optional[date] = Query(None, description="Filter by end date (report created_at or document listed_timeline)"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -146,6 +149,8 @@ async def list_reports(
             status=status_filter,
             template_id=template_id,
             created_by=current_user.user_id,
+            start_date=start_date,
+            end_date=end_date,
             page=page,
             page_size=page_size,
         )
