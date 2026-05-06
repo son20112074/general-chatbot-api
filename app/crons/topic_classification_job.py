@@ -625,4 +625,12 @@ async def topic_classification_job() -> None:
         logger.info("Starting handle new files")
         await _handle_new_files(http_client, all_topics, all_creator_role_map)
 
+async def _run_forever() -> None:
+    """Single event loop: asyncio.run() must not be called in a tight loop (closes the loop each time)."""
+    while True:
+        await topic_classification_job()
+        await asyncio.sleep(1)
 
+
+if __name__ == "__main__":
+    asyncio.run(_run_forever())

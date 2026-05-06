@@ -7,6 +7,7 @@ from sqlalchemy.types import Integer
 from datetime import datetime
 from dateutil import parser as date_parser
 from app.domain.models import User, Role as RoleModel, File as FileModel, Folder as FolderModel
+from app.domain.models.file_topic import FileTopic
 from app.utils.tree_builder import make_tree
 from app.presentation.api.v1.schemas.file import FileListAllSchema
 from app.core.config import settings
@@ -500,6 +501,22 @@ class FileQueryService:
                 proc_cond = FileModel.is_processed == query_params.is_processed
                 query = query.where(proc_cond)
                 count_query = count_query.where(proc_cond)
+
+            # ── topic_id exclude filter ──────────────────────────────
+            # When topic_id is provided, exclude files already matched
+            # (file_topics.is_matched = TRUE) into that topic. Used by
+            # UI pickers to show only un-matched candidates.
+            if query_params.topic_id is not None:
+                matched_subq = (
+                    select(FileTopic.file_id)
+                    .where(
+                        FileTopic.topic_id == query_params.topic_id,
+                        FileTopic.is_matched == True,
+                    )
+                )
+                topic_excl = FileModel.id.notin_(matched_subq)
+                query = query.where(topic_excl)
+                count_query = count_query.where(topic_excl)
 
             # ── Sort (supports multiple fields: "size,created_at") ──
             sort_field_map = {
