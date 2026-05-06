@@ -982,12 +982,18 @@ Recursive — any file anywhere below that node is returned.
 **Search (`search_text`):** case-insensitive OR across file name, containing folder name,
 owner full_name, and pinned role name.
 
-**Filters:** `type`, `owner_name`, `is_processed`. All optional.
+**Filters:** `type`, `owner_name`, `is_processed`, `topic_id`. All optional.
 
 **`is_processed`:**
 - `true` → only processed files
 - `false` → only failed files
 - omit or `null` → all files (no filter)
+
+**`topic_id` (exclude-matched):**
+When provided, excludes files already matched into that topic — returns
+only files NOT present in `file_topics` with `(topic_id=<this>, is_matched=true)`.
+Intended for UI pickers that add files to a topic (hides files already in the topic).
+Both the `data` and `total` fields honor this filter. Omit or `null` to disable.
 
 **Sort (`sort_by` + `sort_order`):** supports single or multi-field sorting.
 Fields: `created_at` (default), `size`. Direction: `desc` (default), `asc`.

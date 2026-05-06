@@ -84,7 +84,11 @@ class FileListAllSchema(BaseModel):
         default=None,
         examples=[None, 4],
         description=(
-            "Filter files by topic_id"
+            "Exclude files already matched into this topic. "
+            "Returns only files NOT present in `file_topics` with "
+            "`(topic_id=<this>, is_matched=true)`. Use in UI pickers that "
+            "add files to a topic — hides files already in the topic. "
+            "Omit or null to disable."
         ),
     )
 
