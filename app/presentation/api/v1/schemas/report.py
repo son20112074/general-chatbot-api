@@ -10,11 +10,12 @@ class ReportTemplateCreate(BaseModel):
     name: str = Field(..., max_length=255)
     description: Optional[str] = None
     frequency: str = Field(..., description="daily | weekly | monthly | quarterly")
-    creation_day: Optional[Literal["today", "tomorrow"]] = None
     creation_time: Optional[time] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_indefinite: bool = True
+    file_mode: Literal["select", "by_period"] = "by_period"
+    file_ids: Optional[List[int]] = None
 
     @field_validator("creation_time")
     @classmethod
@@ -28,11 +29,12 @@ class ReportTemplateUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=255)
     description: Optional[str] = None
     frequency: Optional[str] = None
-    creation_day: Optional[Literal["today", "tomorrow"]] = None
     creation_time: Optional[time] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_indefinite: Optional[bool] = None
+    file_mode: Optional[Literal["select", "by_period"]] = None
+    file_ids: Optional[List[int]] = None
 
     @field_validator("creation_time")
     @classmethod
@@ -47,11 +49,12 @@ class ReportTemplateResponse(BaseModel):
     name: str
     description: Optional[str] = None
     frequency: str
-    creation_day: Optional[str] = None
     creation_time: Optional[time] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_indefinite: bool
+    file_mode: str = "by_period"
+    file_ids: Optional[List[int]] = None
     created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import csv
-import codecs
+import json as _json
 
 import docx as _docx
 import openpyxl
@@ -25,7 +25,7 @@ from app.core.logger import get_logger
 from app.domain.models.file import File as FileModel
 from app.domain.models.report import Report, ReportStatusEnum
 from app.domain.models.report_document import ReportDocument, ReportDocumentStatus
-from app.domain.models.report_template import CreationDayEnum, FrequencyEnum, ReportTemplate
+from app.domain.models.report_template import FileModeEnum, FrequencyEnum, ReportTemplate
 from app.domain.models.user import User
 from app.infrastructure.services.template_extraction_multi_files_service import (
     TemplateExtractionMultiFilesService,
@@ -41,6 +41,14 @@ REPORTS_STORAGE_PREFIX = "downloads/reports"
 
 _QUARTER_END_MONTHS = {3, 6, 9, 12}
 _QUARTER_START_MONTHS = {1, 4, 7, 10}
+
+# Minimum span (days) for a frequency cycle to be considered "large enough"
+_MIN_WINDOW_DAYS = {
+    FrequencyEnum.DAILY: 1,
+    FrequencyEnum.WEEKLY: 7,
+    FrequencyEnum.MONTHLY: 28,
+    FrequencyEnum.QUARTERLY: 90,
+}
 
 
 def _quarter_start(d: date) -> date:
@@ -68,7 +76,7 @@ def _should_run_today(template: ReportTemplate, today: date, now_time: time) -> 
 
     creation_time acts as a gate: skip until the configured time has passed.
     If the job missed the target day (e.g. server was down), it catches up on
-    the following day — "if time exceeded, move to next day".
+    the following day.
     """
     tid = template.id
     tname = template.name
@@ -80,43 +88,31 @@ def _should_run_today(template: ReportTemplate, today: date, now_time: time) -> 
         return False
 
     freq = template.frequency
-    cd = template.creation_day
     yesterday = today - timedelta(days=1)
 
     if freq == FrequencyEnum.DAILY:
-        return True  # every day once creation_time passes
+        return True
 
     if freq == FrequencyEnum.WEEKLY:
-        # TODAY   → last day of week (Sunday=6); catch-up on Monday (=0)
-        # TOMORROW → first day of next week (Monday=0); catch-up on Tuesday (=1)
-        if cd == CreationDayEnum.TODAY:
-            result = today.weekday() in {6, 0}
-        else:
-            result = today.weekday() in {0, 1}
+        result = today.weekday() in {6, 0}  # Sunday (target) or Monday (catch-up)
         if not result:
-            msg = f"[ReportExport] Template {tid} ({tname}) skipped: weekly/{cd.value if cd else None} — today weekday={today.weekday()} not in valid window"
+            msg = f"[ReportExport] Template {tid} ({tname}) skipped: weekly — today weekday={today.weekday()} not in valid window"
             logger.info(msg)
             print(msg)
         return result
 
     if freq == FrequencyEnum.MONTHLY:
-        if cd == CreationDayEnum.TODAY:
-            result = _is_last_day_of_month(today) or _is_last_day_of_month(yesterday)
-        else:
-            result = today.day in {1, 2}
+        result = _is_last_day_of_month(today) or _is_last_day_of_month(yesterday)
         if not result:
-            msg = f"[ReportExport] Template {tid} ({tname}) skipped: monthly/{cd.value if cd else None} — today={today} not in valid window"
+            msg = f"[ReportExport] Template {tid} ({tname}) skipped: monthly — today={today} not in valid window"
             logger.info(msg)
             print(msg)
         return result
 
     if freq == FrequencyEnum.QUARTERLY:
-        if cd == CreationDayEnum.TODAY:
-            result = _is_last_day_of_quarter(today) or _is_last_day_of_quarter(yesterday)
-        else:
-            result = today.month in _QUARTER_START_MONTHS and today.day in {1, 2}
+        result = _is_last_day_of_quarter(today) or _is_last_day_of_quarter(yesterday)
         if not result:
-            msg = f"[ReportExport] Template {tid} ({tname}) skipped: quarterly/{cd.value if cd else None} — today={today} not in valid window"
+            msg = f"[ReportExport] Template {tid} ({tname}) skipped: quarterly — today={today} not in valid window"
             logger.info(msg)
             print(msg)
         return result
@@ -124,49 +120,28 @@ def _should_run_today(template: ReportTemplate, today: date, now_time: time) -> 
     return False
 
 
-def _compute_period(
-    frequency: FrequencyEnum, creation_day: Optional[CreationDayEnum], today: date
-) -> Tuple[date, date]:
+def _compute_period(frequency: FrequencyEnum, today: date) -> Tuple[date, date]:
     """Return (period_start, period_end) anchored to the logical target day.
 
     When running on a catch-up day (day after the target), yesterday becomes
     the anchor so the period still covers the correct cycle.
     """
     yesterday = today - timedelta(days=1)
-    cd = creation_day
 
     if frequency == FrequencyEnum.DAILY:
-        ref = today if cd == CreationDayEnum.TODAY else yesterday
-        return ref, ref
+        return today, today
 
     if frequency == FrequencyEnum.WEEKLY:
-        if cd == CreationDayEnum.TODAY:
-            # anchor = last Sunday (target) or yesterday if today is Monday (catch-up)
-            ref = today if today.weekday() == 6 else yesterday
-            return ref - timedelta(days=6), ref
-        else:
-            # anchor = last/this Monday; period is the preceding Mon–Sun
-            ref = today if today.weekday() == 0 else yesterday
-            end = ref - timedelta(days=1)       # Sunday before this Monday
-            return end - timedelta(days=6), end
+        ref = today if today.weekday() == 6 else yesterday
+        return ref - timedelta(days=6), ref
 
     if frequency == FrequencyEnum.MONTHLY:
-        if cd == CreationDayEnum.TODAY:
-            ref = today if _is_last_day_of_month(today) else yesterday
-            return ref.replace(day=1), ref
-        else:
-            ref = today if today.day == 1 else yesterday
-            end = ref - timedelta(days=1)       # last day of previous month
-            return end.replace(day=1), end
+        ref = today if _is_last_day_of_month(today) else yesterday
+        return ref.replace(day=1), ref
 
     if frequency == FrequencyEnum.QUARTERLY:
-        if cd == CreationDayEnum.TODAY:
-            ref = today if _is_last_day_of_quarter(today) else yesterday
-            return _quarter_start(ref), ref
-        else:
-            ref = today if (today.month in _QUARTER_START_MONTHS and today.day == 1) else yesterday
-            end = ref - timedelta(days=1)       # last day of previous quarter
-            return _quarter_start(end), end
+        ref = today if _is_last_day_of_quarter(today) else yesterday
+        return _quarter_start(ref), ref
 
     return today, today
 
@@ -286,11 +261,7 @@ async def _get_visible_files(
             or_(
                 FileModel.type == "general",
                 and_(FileModel.type == "private", FileModel.created_by == user_id),
-                and_(
-                    FileModel.type == "organization",
-                    FileModel.role_id == user_role_id,
-                    FileModel.created_by == user_id,
-                ),
+                and_(FileModel.type == "organization", FileModel.role_id == user_role_id),
                 *(
                     [and_(FileModel.type == "organization", FileModel.role_id.in_(child_role_ids))]
                     if child_role_ids else []
@@ -298,20 +269,35 @@ async def _get_visible_files(
             )
         ]
 
-    date_filter = []
-    if period_start:
-        date_filter.append(FileModel.created_at >= datetime.combine(period_start, time.min))
-    if period_end:
-        date_filter.append(
-            FileModel.created_at < datetime.combine(period_end + timedelta(days=1), time.min)
+    period_filter = []
+    if period_start or period_end:
+        ps = period_start or date.min
+        pe = period_end or date.max
+
+        created_at_cond = and_(
+            *([FileModel.created_at >= datetime.combine(ps, time.min)] if period_start else []),
+            *([FileModel.created_at < datetime.combine(pe + timedelta(days=1), time.min)] if period_end else []),
         )
+
+        # Also match files whose listed_timeline contains any ISO date within the period.
+        # LEFT(tl, 10) isolates the date portion in case the string has extra characters.
+        timeline_overlap = sa_text(
+            "EXISTS ("
+            "  SELECT 1 FROM unnest(files.listed_timeline) AS tl"
+            "  WHERE tl ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'"
+            "    AND LEFT(tl, 10)::date >= :tl_start"
+            "    AND LEFT(tl, 10)::date <= :tl_end"
+            ")"
+        ).bindparams(tl_start=ps, tl_end=pe)
+
+        period_filter = [or_(created_at_cond, timeline_overlap)]
 
     base_cond = and_(
         or_(FileModel.is_deleted == False, FileModel.is_deleted == None),
         FileModel.content.isnot(None),
         FileModel.content != "",
         *visibility_filter,
-        *date_filter,
+        *period_filter,
     )
 
     result = await session.execute(
@@ -324,6 +310,27 @@ async def _get_visible_files(
             seen_names.add(f.name)
             unique_files.append(f)
     return unique_files
+
+
+async def _get_files_for_template(
+    session: AsyncSession,
+    template: ReportTemplate,
+    user_id: int,
+    user_role_id: int,
+    period_start: Optional[date],
+    period_end: Optional[date],
+) -> List[FileModel]:
+    if template.file_mode == FileModeEnum.SELECT and template.file_ids:
+        result = await session.execute(
+            select(FileModel).where(
+                FileModel.id.in_(template.file_ids),
+                or_(FileModel.is_deleted == False, FileModel.is_deleted == None),
+                FileModel.content.isnot(None),
+                FileModel.content != "",
+            ).order_by(FileModel.created_at.desc())
+        )
+        return list(result.scalars().all())
+    return await _get_visible_files(session, user_id, user_role_id, period_start, period_end)
 
 
 # ── Docx generation ───────────────────────────────────────────────────────────
@@ -354,11 +361,6 @@ def _build_docx(template_name: str, final_json: Dict[str, Any]) -> bytes:
     finally:
         os.unlink(tmp_path)
 
-    safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in template_name)
-    local_path = Path(f"report_{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx")
-    local_path.write_bytes(data)
-    print(f"[ReportExport] Docx saved locally → {local_path.resolve()}")
-
     return data
 
 
@@ -368,7 +370,7 @@ def _save_docx(template_name: str, report_id: int, content: bytes) -> str:
     filename = f"report_{report_id}_{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
     out_path = REPORTS_OUTPUT_DIR / filename
     out_path.write_bytes(content)
-    return f"{settings.STORAGE_PUBLIC_URL.rstrip('/')}/{REPORTS_STORAGE_PREFIX}/{filename}"
+    return f"static/{REPORTS_STORAGE_PREFIX}/{filename}"
 
 
 # ── Status helpers ────────────────────────────────────────────────────────────
@@ -501,7 +503,6 @@ Extract information from INPUT TEXT into structured Markdown following the templ
         msg = f"[ReportExport] Extraction result — processed={result.processed_files} failed={result.failed_files} warnings={result.warnings}"
         logger.info(msg)
         print(msg)
-        import json as _json
         summary_dump = _json.dumps(result.final_json, ensure_ascii=False, indent=2)
         msg = f"[ReportExport] final_json:\n{summary_dump}"
         logger.info(msg)
@@ -593,20 +594,28 @@ async def _run_for_frequency(frequency: FrequencyEnum) -> None:
                 print(msg)
                 continue
 
-            if not template.is_indefinite:
-                existing_any = await session.scalar(
-                    select(func.count()).select_from(Report).where(Report.template_id == template.id)
-                )
-                if existing_any:
-                    msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) is non-indefinite and already has {existing_any} report(s), skipping"
+            if template.is_indefinite:
+                if not _should_run_today(template, today, now_time):
+                    continue
+                period_start, period_end = _compute_period(frequency, today)
+            else:
+                period_start = template.start_date or today
+                period_end = template.end_date or today
+                span = (period_end - period_start).days
+                # Always enforce creation_time gate.
+                # Only enforce the frequency day-of-week/month gate when the
+                # window is large enough to form a full cycle.
+                ct = template.creation_time
+                if ct and now_time < ct:
+                    msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) skipped: creation_time {ct} not yet reached (now={now_time})"
                     logger.info(msg)
                     print(msg)
                     continue
-
-            if not _should_run_today(template, today, now_time):
-                continue
-
-            period_start, period_end = _compute_period(frequency, template.creation_day, today)
+                if span >= _MIN_WINDOW_DAYS.get(frequency, 1):
+                    # creation_time already checked above; pass time.max so
+                    # _should_run_today's internal time gate always passes.
+                    if not _should_run_today(template, today, time.max):
+                        continue
 
             # Idempotency: skip if a report for this period already exists
             existing_count = await session.scalar(
@@ -640,8 +649,8 @@ async def _run_for_frequency(frequency: FrequencyEnum) -> None:
                 print(msg)
                 continue
 
-            files = await _get_visible_files(
-                session, user_row.id, user_row.role_id, period_start, period_end
+            files = await _get_files_for_template(
+                session, template, user_row.id, user_row.role_id, period_start, period_end
             )
             if not files:
                 msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) — no files in {period_start}→{period_end}, skipping"
@@ -649,7 +658,7 @@ async def _run_for_frequency(frequency: FrequencyEnum) -> None:
                 print(msg)
                 continue
 
-            msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) | creation_day={template.creation_day.value if template.creation_day else None} | user_id={user_row.id} | {len(files)} file(s) | {period_start}→{period_end}"
+            msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) | user_id={user_row.id} | {len(files)} file(s) | {period_start}→{period_end}"
             logger.info(msg)
             print(msg)
             await _process_template(session, template, files, period_start, period_end)
@@ -694,14 +703,15 @@ async def test_report_export_weekly() -> None:
             logger.info(msg)
             print(msg)
 
-            files = (await _get_visible_files(session, user_row.id, user_row.role_id, period_start, period_end))[:3]
+            files = (await _get_visible_files(session, user_row.id, user_row.role_id, period_start, period_end))[:2]
+
             if not files:
                 msg = f"[TestReportExport] No files found in {period_start} → {period_end}, aborting"
                 logger.warning(msg)
                 print(msg)
                 return
 
-            msg = f"[TestReportExport] Using {len(files)} file(s) (latest 3) — starting extraction"
+            msg = f"[TestReportExport] Using {len(files)} file(s) (latest 2) — starting extraction"
             logger.info(msg)
             print(msg)
 
@@ -774,5 +784,21 @@ async def report_export_quarterly_job() -> None:
         print(msg)
     except Exception:
         msg = "[ReportExport] Quarterly job failed"
+        logger.exception(msg)
+        print(msg)
+
+
+async def report_export_all_job() -> None:
+    try:
+        msg = "[ReportExport] Daily run started"
+        logger.info(msg)
+        print(msg)
+        for freq in FrequencyEnum:
+            await _run_for_frequency(freq)
+        msg = "[ReportExport] Daily run finished"
+        logger.info(msg)
+        print(msg)
+    except Exception:
+        msg = "[ReportExport] Daily run failed"
         logger.exception(msg)
         print(msg)

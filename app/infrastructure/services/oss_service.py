@@ -79,10 +79,10 @@ class OpenRouterClient:
             ],
             "temperature": 0.1,
             "max_tokens": 2000,  # ✅ increase to avoid truncation
-            "provider": {
-                "allow_fallbacks": True,
-                "order": ["fireworks", "deepinfra"]
-            }
+            # "provider": {
+            #     "allow_fallbacks": True,
+            #     "order": ["fireworks", "deepinfra"]
+            # }
         }
 
         async with httpx.AsyncClient() as client:

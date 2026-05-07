@@ -1,12 +1,15 @@
+from datetime import date as date_type
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.domain.models.report import Report, ReportStatusEnum
 from app.domain.models.report_document import ReportDocument
-from app.domain.models.report_template import FrequencyEnum, ReportTemplate
+from app.domain.models.report_template import FileModeEnum, FrequencyEnum, ReportTemplate
 from app.presentation.api.v1.schemas.report import (
     ReportTemplateCreate,
     ReportTemplateUpdate,
@@ -30,11 +33,12 @@ class ReportService:
             name=data.name,
             description=data.description,
             frequency=FrequencyEnum(data.frequency),
-            creation_day=data.creation_day,
             creation_time=data.creation_time,
             start_date=data.start_date,
             end_date=data.end_date,
             is_indefinite=data.is_indefinite,
+            file_mode=FileModeEnum(data.file_mode),
+            file_ids=data.file_ids,
             created_by=created_by,
         )
         self.db.add(template)
@@ -48,12 +52,26 @@ class ReportService:
         )
         return result.scalar_one_or_none()
 
-    async def list_templates(self, created_by: Optional[int] = None) -> List[ReportTemplate]:
-        stmt = select(ReportTemplate)
+    async def list_templates(
+        self, created_by: Optional[int] = None, page: int = 1, page_size: int = 20
+    ) -> Dict[str, Any]:
+        base_filter = []
         if created_by is not None:
-            stmt = stmt.where(ReportTemplate.created_by == created_by)
-        result = await self.db.execute(stmt.order_by(ReportTemplate.created_at.desc()))
-        return list(result.scalars().all())
+            base_filter.append(ReportTemplate.created_by == created_by)
+
+        total_result = await self.db.execute(
+            select(func.count()).select_from(ReportTemplate).where(*base_filter)
+        )
+        total = total_result.scalar_one()
+
+        result = await self.db.execute(
+            select(ReportTemplate)
+            .where(*base_filter)
+            .order_by(ReportTemplate.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        return {"data": list(result.scalars().all()), "total": total, "page": page, "page_size": page_size}
 
     async def update_template(
         self, template_id: int, data: ReportTemplateUpdate
@@ -65,6 +83,8 @@ class ReportService:
         update_data = data.model_dump(exclude_unset=True)
         if "frequency" in update_data and update_data["frequency"] is not None:
             update_data["frequency"] = FrequencyEnum(update_data["frequency"])
+        if "file_mode" in update_data and update_data["file_mode"] is not None:
+            update_data["file_mode"] = FileModeEnum(update_data["file_mode"])
 
         for field, value in update_data.items():
             setattr(template, field, value)
@@ -102,6 +122,8 @@ class ReportService:
         status: Optional[str] = None,
         template_id: Optional[int] = None,
         created_by: Optional[int] = None,
+        start_date: Optional[date_type] = None,
+        end_date: Optional[date_type] = None,
         page: int = 1,
         page_size: int = 20,
     ) -> Dict[str, Any]:
@@ -116,6 +138,42 @@ class ReportService:
             base_filter.append(Report.template_id == template_id)
         if created_by is not None:
             base_filter.append(Report.created_by == created_by)
+        if start_date or end_date:
+            schema = settings.DB_SCHEMA
+            date_conds = []
+
+            ca_conds = []
+            if start_date:
+                ca_conds.append(func.date(Report.created_at) >= start_date)
+            if end_date:
+                ca_conds.append(func.date(Report.created_at) <= end_date)
+            date_conds.append(and_(*ca_conds))
+
+            tl_parts = []
+            tl_params: Dict[str, Any] = {}
+            if start_date:
+                tl_parts.append("LEFT(tl, 10)::date >= :tl_start")
+                tl_params["tl_start"] = start_date
+            if end_date:
+                tl_parts.append("LEFT(tl, 10)::date <= :tl_end")
+                tl_params["tl_end"] = end_date
+            tl_where = " AND ".join(tl_parts)
+
+            timeline_cond = sa_text(
+                f"EXISTS ("
+                f"  SELECT 1 FROM {schema}.report_documents rd"
+                f"  JOIN {schema}.files f ON f.id = rd.document_id"
+                f"  WHERE rd.report_id = reports.id"
+                f"  AND EXISTS ("
+                f"    SELECT 1 FROM unnest(f.listed_timeline) AS tl"
+                f"    WHERE tl ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'"
+                f"    AND {tl_where}"
+                f"  )"
+                f")"
+            ).bindparams(**tl_params)
+            date_conds.append(timeline_cond)
+
+            base_filter.append(or_(*date_conds))
 
         total_result = await self.db.execute(
             select(func.count()).select_from(Report).where(*base_filter)
@@ -166,12 +224,12 @@ class ReportService:
         ]
         self.db.add_all(rows)
         await self.db.commit()
+        for row in rows:
+            await self.db.refresh(row)
         return rows
 
     async def remove_documents(self, report_id: int) -> None:
-        result = await self.db.execute(
-            select(ReportDocument).where(ReportDocument.report_id == report_id)
+        await self.db.execute(
+            delete(ReportDocument).where(ReportDocument.report_id == report_id)
         )
-        for row in result.scalars().all():
-            await self.db.delete(row)
         await self.db.commit()

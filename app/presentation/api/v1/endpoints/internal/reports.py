@@ -1,4 +1,5 @@
-from typing import Dict, List, Optional
+from datetime import date
+from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,17 +50,24 @@ def _assert_report_owner(report, user_id: int) -> None:
 
 # ── Report Templates ──────────────────────────────────────────────────────────
 
-@router.get("/templates", response_model=List[ReportTemplateResponse], tags=["Report Templates"])
+@router.get("/templates", response_model=Dict)
 async def list_templates(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     service = ReportService(db)
-    templates = await service.list_templates(created_by=current_user.user_id)
-    return [ReportTemplateResponse.model_validate(t) for t in templates]
+    result = await service.list_templates(created_by=current_user.user_id, page=page, page_size=page_size)
+    return {
+        "data": [ReportTemplateResponse.model_validate(t) for t in result["data"]],
+        "total": result["total"],
+        "page": result["page"],
+        "page_size": result["page_size"],
+    }
 
 
-@router.post("/templates", response_model=ReportTemplateResponse, status_code=status.HTTP_201_CREATED, tags=["Report Templates"])
+@router.post("/templates", response_model=ReportTemplateResponse, status_code=status.HTTP_201_CREATED)
 async def create_template(
     data: ReportTemplateCreate,
     db: AsyncSession = Depends(get_db),
@@ -73,7 +81,7 @@ async def create_template(
     return ReportTemplateResponse.model_validate(template)
 
 
-@router.get("/templates/{template_id}", response_model=ReportTemplateResponse, tags=["Report Templates"])
+@router.get("/templates/{template_id}", response_model=ReportTemplateResponse)
 async def get_template(
     template_id: int,
     db: AsyncSession = Depends(get_db),
@@ -87,7 +95,7 @@ async def get_template(
     return ReportTemplateResponse.model_validate(template)
 
 
-@router.put("/templates/{template_id}", response_model=ReportTemplateResponse, tags=["Report Templates"])
+@router.put("/templates/{template_id}", response_model=ReportTemplateResponse)
 async def update_template(
     template_id: int,
     data: ReportTemplateUpdate,
@@ -106,7 +114,7 @@ async def update_template(
     return ReportTemplateResponse.model_validate(template)
 
 
-@router.delete("/templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Report Templates"])
+@router.delete("/templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_template(
     template_id: int,
     db: AsyncSession = Depends(get_db),
@@ -127,6 +135,8 @@ async def list_reports(
     q: Optional[str] = Query(None, description="Search by report name"),
     status_filter: Optional[str] = Query(None, alias="status", description="compiling | completed | failed"),
     template_id: Optional[int] = Query(None),
+    start_date: Optional[date] = Query(None, description="Filter by start date (report created_at or document listed_timeline)"),
+    end_date: Optional[date] = Query(None, description="Filter by end date (report created_at or document listed_timeline)"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -139,6 +149,8 @@ async def list_reports(
             status=status_filter,
             template_id=template_id,
             created_by=current_user.user_id,
+            start_date=start_date,
+            end_date=end_date,
             page=page,
             page_size=page_size,
         )

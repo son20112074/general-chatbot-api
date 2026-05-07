@@ -23,6 +23,7 @@ class TopicResponse(BaseModel):
     created_by: Optional[int] = None
     owner: Optional[Dict[str, Any]] = None
     is_deleted: bool = False
+    file_total: Optional[int] = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -31,3 +32,8 @@ class TopicResponse(BaseModel):
         json_encoders = {
             datetime: lambda v: v.isoformat() if v else None
         }
+
+
+class TopicFileMatchRequest(BaseModel):
+    topic_id: int = Field(..., gt=0)
+    file_id: int = Field(..., gt=0)

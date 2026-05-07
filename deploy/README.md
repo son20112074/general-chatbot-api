@@ -45,11 +45,38 @@ nano deploy/dev/.env    # fill SECRET_KEY, DATABASE_URI, STORAGE_PUBLIC_URL, OPE
 |---|---|
 | `./deploy/deploy.sh dev` | Build and deploy using version from `deploy/dev/VERSION` |
 | `./deploy/deploy.sh dev -v 1.2.3` | Build and deploy with explicit version (overrides VERSION file) |
+| `./deploy/deploy.sh dev --no-cache` | Build with no Docker layer cache (forces fresh rebuild from source) |
+| `./deploy/deploy.sh dev -v 1.2.3 --no-cache` | Explicit version + no-cache rebuild |
+| `./deploy/deploy.sh dev down` | Stop & remove containers (named volumes preserved) |
+| `./deploy/deploy.sh dev down -v` | Stop, remove containers **AND named volumes** (destructive — postgres/redis/minio data lost) |
 | `./deploy/deploy.sh dev rollback` | Roll back to the previous image (`:previous` tag) |
 | `./deploy/deploy.sh dev use 1.0.0` | Switch to an existing local image tag (no rebuild) |
 | `./deploy/deploy.sh dev list` | List local image tags for this environment |
 
 Replace `dev` with `stag` or `prod` for other environments.
+
+### Why use `down` from the script
+
+The script passes `-p chatbot-api-dev` explicitly so it always targets the right
+compose project. Manual `cd deploy/dev && docker-compose down` defaults the
+project name to the folder (`dev`), which does **not** match — containers stay
+running. Always use `./deploy.sh dev down`, or pass `-p chatbot-api-dev` manually:
+
+```bash
+docker-compose -f deploy/dev/docker-compose.yml -p chatbot-api-dev down
+```
+
+### When to use `--no-cache`
+
+Default builds reuse Docker layer cache for speed. Pass `--no-cache` when:
+
+- A code change isn't reflected after a normal deploy.
+- Pinned dependency versions changed but the lock layer was cached.
+- You suspect a corrupted cached layer.
+
+Every build also passes `--pull` automatically so base images stay fresh, and
+`up -d --force-recreate` ensures the container restarts even if the `:latest`
+tag string was unchanged.
 
 ## Releasing a new version
 
