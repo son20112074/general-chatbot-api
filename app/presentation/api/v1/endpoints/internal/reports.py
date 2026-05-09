@@ -52,13 +52,14 @@ def _assert_report_owner(report, user_id: int) -> None:
 
 @router.get("/templates", response_model=Dict)
 async def list_templates(
+    q: Optional[str] = Query(None, description="Search by template name"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     service = ReportService(db)
-    result = await service.list_templates(created_by=current_user.user_id, page=page, page_size=page_size)
+    result = await service.list_templates(created_by=current_user.user_id, q=q, page=page, page_size=page_size)
     return {
         "data": [ReportTemplateResponse.model_validate(t) for t in result["data"]],
         "total": result["total"],
@@ -135,8 +136,8 @@ async def list_reports(
     q: Optional[str] = Query(None, description="Search by report name"),
     status_filter: Optional[str] = Query(None, alias="status", description="compiling | completed | failed"),
     template_id: Optional[int] = Query(None),
-    start_date: Optional[date] = Query(None, description="Filter by start date (report created_at or document listed_timeline)"),
-    end_date: Optional[date] = Query(None, description="Filter by end date (report created_at or document listed_timeline)"),
+    start_date: Optional[date] = Query(None, description="Filter by start date (report created_at)"),
+    end_date: Optional[date] = Query(None, description="Filter by end date (report created_at)"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),

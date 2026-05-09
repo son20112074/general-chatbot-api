@@ -1,12 +1,10 @@
 from datetime import date as date_type
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, delete, func, or_, select
-from sqlalchemy import text as sa_text
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.config import settings
 from app.domain.models.report import Report, ReportStatusEnum
 from app.domain.models.report_document import ReportDocument
 from app.domain.models.report_template import FileModeEnum, FrequencyEnum, ReportTemplate
@@ -53,11 +51,13 @@ class ReportService:
         return result.scalar_one_or_none()
 
     async def list_templates(
-        self, created_by: Optional[int] = None, page: int = 1, page_size: int = 20
+        self, created_by: Optional[int] = None, q: Optional[str] = None, page: int = 1, page_size: int = 20
     ) -> Dict[str, Any]:
         base_filter = []
         if created_by is not None:
             base_filter.append(ReportTemplate.created_by == created_by)
+        if q:
+            base_filter.append(ReportTemplate.name.ilike(f"%{_escape_like(q)}%"))
 
         total_result = await self.db.execute(
             select(func.count()).select_from(ReportTemplate).where(*base_filter)
@@ -139,41 +139,12 @@ class ReportService:
         if created_by is not None:
             base_filter.append(Report.created_by == created_by)
         if start_date or end_date:
-            schema = settings.DB_SCHEMA
-            date_conds = []
-
             ca_conds = []
             if start_date:
                 ca_conds.append(func.date(Report.created_at) >= start_date)
             if end_date:
                 ca_conds.append(func.date(Report.created_at) <= end_date)
-            date_conds.append(and_(*ca_conds))
-
-            tl_parts = []
-            tl_params: Dict[str, Any] = {}
-            if start_date:
-                tl_parts.append("LEFT(tl, 10)::date >= :tl_start")
-                tl_params["tl_start"] = start_date
-            if end_date:
-                tl_parts.append("LEFT(tl, 10)::date <= :tl_end")
-                tl_params["tl_end"] = end_date
-            tl_where = " AND ".join(tl_parts)
-
-            timeline_cond = sa_text(
-                f"EXISTS ("
-                f"  SELECT 1 FROM {schema}.report_documents rd"
-                f"  JOIN {schema}.files f ON f.id = rd.document_id"
-                f"  WHERE rd.report_id = reports.id"
-                f"  AND EXISTS ("
-                f"    SELECT 1 FROM unnest(f.listed_timeline) AS tl"
-                f"    WHERE tl ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'"
-                f"    AND {tl_where}"
-                f"  )"
-                f")"
-            ).bindparams(**tl_params)
-            date_conds.append(timeline_cond)
-
-            base_filter.append(or_(*date_conds))
+            base_filter.append(and_(*ca_conds))
 
         total_result = await self.db.execute(
             select(func.count()).select_from(Report).where(*base_filter)

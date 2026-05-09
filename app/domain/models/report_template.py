@@ -52,6 +52,7 @@ class ReportTemplate(Base):
         default=FileModeEnum.BY_PERIOD,
         server_default='by_period',
     )
+    is_use_timeline = Column(Boolean, default=False, nullable=False, server_default='false')
     file_ids = Column(ARRAY(Integer), nullable=True)
     created_by = Column(Integer, ForeignKey(f'{settings.DB_SCHEMA}.users.id', ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
