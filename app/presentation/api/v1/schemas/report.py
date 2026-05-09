@@ -14,6 +14,7 @@ class ReportTemplateCreate(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_indefinite: bool = True
+    is_use_timeline: bool = False
     file_mode: Literal["select", "by_period"] = "by_period"
     file_ids: Optional[List[int]] = None
 
@@ -33,6 +34,7 @@ class ReportTemplateUpdate(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_indefinite: Optional[bool] = None
+    is_use_timeline: Optional[bool] = None
     file_mode: Optional[Literal["select", "by_period"]] = None
     file_ids: Optional[List[int]] = None
 
@@ -53,6 +55,7 @@ class ReportTemplateResponse(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_indefinite: bool
+    is_use_timeline: bool = False
     file_mode: str = "by_period"
     file_ids: Optional[List[int]] = None
     created_by: Optional[int] = None

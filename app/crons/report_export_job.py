@@ -243,6 +243,7 @@ async def _get_visible_files(
     user_role_id: int,
     period_start: Optional[date] = None,
     period_end: Optional[date] = None,
+    use_timeline: bool = False,
 ) -> List[FileModel]:
     if user_role_id == ADMIN_ROLE_ID:
         visibility_filter = []
@@ -274,23 +275,26 @@ async def _get_visible_files(
         ps = period_start or date.min
         pe = period_end or date.max
 
-        created_at_cond = and_(
-            *([FileModel.created_at >= datetime.combine(ps, time.min)] if period_start else []),
-            *([FileModel.created_at < datetime.combine(pe + timedelta(days=1), time.min)] if period_end else []),
-        )
-
-        # Also match files whose listed_timeline contains any ISO date within the period.
-        # LEFT(tl, 10) isolates the date portion in case the string has extra characters.
-        timeline_overlap = sa_text(
-            "EXISTS ("
-            "  SELECT 1 FROM unnest(files.listed_timeline) AS tl"
-            "  WHERE tl ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'"
-            "    AND LEFT(tl, 10)::date >= :tl_start"
-            "    AND LEFT(tl, 10)::date <= :tl_end"
-            ")"
-        ).bindparams(tl_start=ps, tl_end=pe)
-
-        period_filter = [or_(created_at_cond, timeline_overlap)]
+        if use_timeline:
+            tl_parts = ["tl ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'"]
+            tl_params: Dict[str, Any] = {}
+            if period_start:
+                tl_parts.append("LEFT(tl, 10)::date >= :tl_start")
+                tl_params["tl_start"] = ps
+            if period_end:
+                tl_parts.append("LEFT(tl, 10)::date <= :tl_end")
+                tl_params["tl_end"] = pe
+            period_filter = [sa_text(
+                "EXISTS ("
+                "  SELECT 1 FROM unnest(files.listed_timeline) AS tl"
+                f"  WHERE {' AND '.join(tl_parts)}"
+                ")"
+            ).bindparams(**tl_params)]
+        else:
+            period_filter = [and_(
+                *([FileModel.created_at >= datetime.combine(ps, time.min)] if period_start else []),
+                *([FileModel.created_at < datetime.combine(pe + timedelta(days=1), time.min)] if period_end else []),
+            )]
 
     base_cond = and_(
         or_(FileModel.is_deleted == False, FileModel.is_deleted == None),
@@ -330,7 +334,7 @@ async def _get_files_for_template(
             ).order_by(FileModel.created_at.desc())
         )
         return list(result.scalars().all())
-    return await _get_visible_files(session, user_id, user_role_id, period_start, period_end)
+    return await _get_visible_files(session, user_id, user_role_id, period_start, period_end, use_timeline=template.is_use_timeline)
 
 
 # ── Docx generation ───────────────────────────────────────────────────────────
