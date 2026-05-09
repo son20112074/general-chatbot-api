@@ -31,25 +31,25 @@ def register_jobs(scheduler: AsyncIOScheduler):
     )
 
     # Graph extraction: process files every 30 seconds
-    scheduler.add_job(
-        graph_extraction_job,
-        trigger="interval",
-        seconds=30,
-        id="graph_extraction",
-        name="Graph Extraction",
-        replace_existing=True,
-    )
+    # scheduler.add_job(
+    #     graph_extraction_job,
+    #     trigger="interval",
+    #     seconds=30,
+    #     id="graph_extraction",
+    #     name="Graph Extraction",
+    #     replace_existing=True,
+    # )
 
     # Topic classification: classify files every 30 seconds
-    scheduler.add_job(
-        topic_classification_job,
-        trigger="interval",
-        seconds=settings.TOPIC_CLASSIFY_INTERVAL_SECONDS,
-        id="topic_classification",
-        name="Topic Classification",
-        replace_existing=True,
-        max_instances=1,
-    )
+    # scheduler.add_job(
+    #     topic_classification_job,
+    #     trigger="interval",
+    #     seconds=settings.TOPIC_CLASSIFY_INTERVAL_SECONDS,
+    #     id="topic_classification",
+    #     name="Topic Classification",
+    #     replace_existing=True,
+    #     max_instances=1,
+    # )
     scheduler.add_job(
         report_export_daily_job,
         trigger="cron",

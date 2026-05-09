@@ -88,7 +88,7 @@ async def _call_llm(
         "messages": messages,
         "temperature": 0,
     }
-    api_url = f"{str(settings.LLM_API).rstrip('/')}/chat/completions"
+    api_url = f"{str(settings.LLM_API).rstrip('/')}"
 
     max_retries = max(0, int(settings.TOPIC_CLASSIFY_LLM_RATE_LIMIT_RETRIES))
     max_sleep = max(0, int(settings.TOPIC_CLASSIFY_LLM_RATE_LIMIT_MAX_SLEEP_SECONDS))
@@ -599,7 +599,7 @@ async def _handle_new_files(
 
 async def topic_classification_job() -> None:
     async with get_db_session() as db:
-        logger.info("Get all topics")
+        # logger.info("Get all topics")
         all_topics = await _get_active_topics(db)
         all_creator_role_map = await _get_creator_role_map(db, all_topics)
 
@@ -608,7 +608,7 @@ async def topic_classification_job() -> None:
 
     async with httpx.AsyncClient(timeout=180) as http_client:
         async with get_db_session() as db:
-            logger.info("Get new topics")
+            # logger.info("Get new topics")
             new_topics = await _get_new_topics(db)
             new_creator_role_map = (
                 await _get_creator_role_map(db, new_topics) if new_topics else {}
@@ -622,7 +622,7 @@ async def topic_classification_job() -> None:
             )
             await _handle_new_topics(http_client, new_topics, new_creator_role_map)
 
-        logger.info("Starting handle new files")
+        # logger.info("Starting handle new files")
         await _handle_new_files(http_client, all_topics, all_creator_role_map)
 
 async def _run_forever() -> None:

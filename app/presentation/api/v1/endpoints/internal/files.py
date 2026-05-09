@@ -78,31 +78,6 @@ def _resolve_static_file_path(file_path: str) -> Path:
     return resolved
 
 
-def parse_datetime_safe(datetime_str: str) -> datetime:
-    """
-    Parse datetime string and convert to timezone-naive datetime.
-    
-    Args:
-        datetime_str: Datetime string to parse
-        
-    Returns:
-        timezone-naive datetime object
-        
-    Raises:
-        ValueError: If datetime string is invalid
-    """
-    try:
-        parsed_time = date_parser.parse(datetime_str)
-        # Convert to timezone-naive datetime if it has timezone info
-        if parsed_time.tzinfo is not None:
-            return parsed_time.replace(tzinfo=None)
-        else:
-            return parsed_time
-    except Exception as e:
-        raise ValueError(f"Invalid datetime format: {str(e)}")
-
-
-
 # ── Endpoints ────────────────────────────────────────────────
 @router.post("/upload")
 async def upload_file(

@@ -74,6 +74,7 @@ class File(Base):
     listed_technology = Column(ARRAY(String), nullable=True)
     listed_company = Column(ARRAY(String), nullable=True)
     listed_timeline = Column(ARRAY(String), nullable=True)
+    responsible_departments = Column(ARRAY(String), nullable=True)
 
     # Relationships
     creator = relationship("User", foreign_keys=[created_by])
@@ -124,6 +125,7 @@ class File(Base):
             "listed_technology": self.listed_technology,
             "listed_company": self.listed_company,
             "listed_timeline": self.listed_timeline,
+            "responsible_departments": self.responsible_departments,
             "is_topic_classified": self.is_topic_classified,
             "topic_classify_retries": getattr(self, "topic_classify_retries", 0),
         }

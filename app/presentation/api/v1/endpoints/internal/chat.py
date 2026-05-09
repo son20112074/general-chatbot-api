@@ -32,10 +32,12 @@ async def get_first_messages(
             ChatMessage.data.label("data"),
             ChatMessage.type.label("type"),
             ChatMessage.created_at.label("created_at"),
+            ChatMessage.chat_type.label("chat_type"),
             func.row_number()
             .over(partition_by=ChatMessage.session_id, order_by=ChatMessage.created_at.asc())
             .label("rn"),
         )
+        .where(ChatMessage.chat_type == 'file')
         .subquery()
     )
 

@@ -10,6 +10,8 @@ import logging
 import sys
 import os
 import tempfile
+import json
+import unicodedata
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import time
@@ -50,6 +52,8 @@ class FileProcessingJob:
         self.db = db_session
         self.parser = FileParser()
         self.summary_service = SummaryService(api_url=settings.LLM_API)
+        self.departments_config_path = Path(__file__).resolve().parent / "config" / "departments.json"
+        self._departments_cache: Optional[List[Dict[str, str]]] = None
         self.processed_count = 0
         self.failed_count = 0
         self.errors = []
@@ -118,6 +122,7 @@ class FileProcessingJob:
             
             # Extract metadata (countries, technologies, companies, important news)
             metadata = self._extract_metadata(summary, normalized_ext)
+            responsible_departments = self._classify_responsible_departments(summary, normalized_ext)
 
             # Log summary generation result
             if summary:
@@ -130,13 +135,23 @@ class FileProcessingJob:
                 logger.info(f"🏷️ Metadata extracted for {file.name}: {len(metadata.get('listed_nation', []))} countries, {len(metadata.get('listed_technology', []))} technologies, {len(metadata.get('listed_company', []))} companies, {len(metadata.get('important_news', []))} news items, {len(metadata.get('listed_timeline', []))} timeline items")
             else:
                 logger.info(f"ℹ️ No metadata available for {file.name} - will be stored as empty arrays")
+
+            logger.info(f"🏢 Classified {len(responsible_departments)} responsible departments for {file.name}")
             
             # Calculate processing duration
             processing_duration = int(time.time() - start_time)
             logger.info(f"⏱️ Processing completed in {processing_duration} seconds for {file.name}")
             
             # Update file in database
-            await self._update_file_processing(file.id, content, summary, metadata, True, processing_duration)
+            await self._update_file_processing(
+                file.id,
+                content,
+                summary,
+                metadata,
+                responsible_departments,
+                True,
+                processing_duration,
+            )
             
             self.processed_count += 1
             logger.info(f"✅ Successfully processed file: {file.name}")
@@ -161,7 +176,7 @@ class FileProcessingJob:
             logger.error(error_msg)
             
             # Mark file as processing failed
-            await self._update_file_processing(file.id, None, None, None, False, processing_duration)
+            await self._update_file_processing(file.id, None, None, None, [], False, processing_duration)
             
             return {
                 "success": False,
@@ -262,23 +277,190 @@ class FileProcessingJob:
         """Extract metadata (countries, technologies, companies, important news) from content."""
         if not content or len(content.strip()) == 0:
             return None
-        
+
         try:
             logger.info(f"Extracting metadata for {extension} file")
             metadata_result = self.summary_service.extract_metadata(content, extension)
-            
+
             if metadata_result["success"]:
                 logger.info(f"✅ Metadata extracted successfully for {extension}")
                 return metadata_result["metadata"]
             else:
                 logger.warning(f"❌ Failed to extract metadata for {extension}: {metadata_result['error']}")
-                # Return None if metadata extraction fails
                 return None
-                
+
         except Exception as e:
             logger.error(f"Error extracting metadata for {extension}: {str(e)}")
-            # Return None if metadata extraction fails
             return None
+
+    @staticmethod
+    def _normalize_department_compare(label: str) -> str:
+        """Normalize for forgiving match (strip, lower, remove Vietnamese combining marks)."""
+        s = unicodedata.normalize("NFD", (label or "").strip().lower())
+        return "".join(c for c in s if unicodedata.category(c) != "Mn")
+
+    def _resolve_canonical_department_name(self, raw: str, departments: List[Dict[str, str]]) -> Optional[str]:
+        """Map LLM output (name or stray code) to canonical name from taxonomy."""
+        t = (raw or "").strip()
+        if not t:
+            return None
+        t_cmp = self._normalize_department_compare(t)
+        t_lower = t.lower()
+
+        # Exact / case-insensitive name match
+        for d in departments:
+            canonical = (d.get("name") or "").strip()
+            if canonical and (t == canonical or t.lower() == canonical.lower()):
+                return canonical
+
+        # Normalize match (accent / spacing quirks)
+        for d in departments:
+            canonical = (d.get("name") or "").strip()
+            if canonical and self._normalize_department_compare(canonical) == t_cmp:
+                return canonical
+
+        # LLM accidentally returned stable code instead of Vietnamese name
+        for d in departments:
+            code = (d.get("code") or "").strip()
+            if code and t_lower == code.lower():
+                return (d.get("name") or "").strip() or None
+
+        return None
+
+    def _default_fallback_department_name(self, departments: List[Dict[str, str]]) -> str:
+        """When classification yields nothing usable, assign one neutral umbrella department."""
+        for d in departments:
+            if d.get("code") == "operations":
+                name = (d.get("name") or "").strip()
+                if name:
+                    return name
+        first = departments[0]
+        return (first.get("name") or "").strip() or ""
+
+    def _load_departments(self) -> List[Dict[str, str]]:
+        """Load department taxonomy from JSON config file."""
+        if self._departments_cache is not None:
+            return self._departments_cache
+
+        try:
+            if not self.departments_config_path.exists():
+                logger.warning(f"Departments config not found at {self.departments_config_path}")
+                self._departments_cache = []
+                return self._departments_cache
+
+            with self.departments_config_path.open("r", encoding="utf-8") as f:
+                raw_departments = json.load(f)
+
+            if not isinstance(raw_departments, list):
+                logger.warning("Departments config is invalid: expected a list")
+                self._departments_cache = []
+                return self._departments_cache
+
+            departments: List[Dict[str, str]] = []
+            for item in raw_departments:
+                if not isinstance(item, dict):
+                    continue
+                code = str(item.get("code", "")).strip()
+                name = str(item.get("name", "")).strip()
+                description = str(item.get("description", "")).strip()
+                if code and name:
+                    departments.append({
+                        "code": code,
+                        "name": name,
+                        "description": description,
+                    })
+
+            self._departments_cache = departments
+            return self._departments_cache
+        except Exception as e:
+            logger.warning(f"Failed to load departments config: {e}")
+            self._departments_cache = []
+            return self._departments_cache
+
+    def _classify_responsible_departments(self, summary: Optional[str], extension: str) -> List[str]:
+        """Classify responsible departments from summary and department taxonomy (Vietnamese names)."""
+        if not summary or len(summary.strip()) == 0:
+            return []
+
+        departments = self._load_departments()
+        if not departments:
+            return []
+
+        taxonomy_text = "\n".join(
+            f"- Tên phòng ban: {dept['name']}\n  Mô tả: {dept.get('description', '')}"
+            for dept in departments
+        )
+
+        try:
+            system_prompt = f"""
+                Bạn là trợ lý phân loại tài liệu nội bộ. Dựa trên bản tóm tắt, hãy chọn một hoặc nhiều phòng ban
+                chịu trách nhiệm xử lý tài liệu này.
+
+                Danh mục phòng ban (chỉ được chọn trong danh sách này):
+                {taxonomy_text}
+
+                Trả về DUY NHẤT một JSON hợp lệ với cấu trúc chính xác:
+                {{"responsible_departments": ["Tên phòng ban 1", "Tên phòng ban 2"]}}
+
+                Quy tắc:
+                - Mỗi phần tử trong mảng phải là đúng chuỗi "Tên phòng ban" như trong danh mục (tiếng Việt có dấu).
+                - Phòng ban phù hợp nhất phải đứng đầu danh sách.
+                - Luôn trả về ít nhất một phòng ban phù hợp nhất; không để mảng rỗng.
+                - Có thể chọn nhiều phòng ban nếu nội dung liên quan chéo.
+                - Không dùng markdown, không giải thích thêm, không thêm trường JSON khác.
+            """
+            logger.info(f"System prompt: {system_prompt}")
+            payload = {
+                "model": self.summary_service.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Bản tóm tắt tài liệu:\n{summary}"},
+                ],
+                "stream": False,
+            }
+
+            response = self.summary_service.session.post(
+                f"{self.summary_service.api_url.rstrip('/')}",
+                headers=self.summary_service._openai_headers(),
+                json=payload,
+                timeout=120,
+            )
+            response.raise_for_status()
+            result = response.json()
+            llm_content = (
+                result.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            if not llm_content:
+                fallback = self._default_fallback_department_name(departments)
+                return [fallback] if fallback else []
+
+            cleaned = self.summary_service._clean_json_content(llm_content.strip())
+            parsed = json.loads(cleaned)
+            raw_names = parsed.get("responsible_departments", [])
+
+            if not isinstance(raw_names, list):
+                fallback = self._default_fallback_department_name(departments)
+                return [fallback] if fallback else []
+
+            normalized_names: List[str] = []
+            for item in raw_names:
+                if not isinstance(item, str):
+                    continue
+                canonical = self._resolve_canonical_department_name(item, departments)
+                if canonical and canonical not in normalized_names:
+                    normalized_names.append(canonical)
+
+            if not normalized_names:
+                fallback = self._default_fallback_department_name(departments)
+                return [fallback] if fallback else []
+
+            return normalized_names
+        except Exception as e:
+            logger.warning(f"Failed to classify responsible departments for {extension}: {e}")
+            fallback = self._default_fallback_department_name(departments)
+            return [fallback] if fallback else []
 
     
     def _extract_excel_content(self, result: Dict[str, Any]) -> str:
@@ -310,7 +492,16 @@ class FileProcessingJob:
         
         return "No content extracted from Excel file"
     
-    async def _update_file_processing(self, file_id: int, content: str, summary: Optional[str], metadata: Optional[Dict[str, Any]], is_processed: bool, processing_duration: Optional[int] = None):
+    async def _update_file_processing(
+        self,
+        file_id: int,
+        content: str,
+        summary: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        responsible_departments: Optional[List[str]],
+        is_processed: bool,
+        processing_duration: Optional[int] = None
+    ):
         """Update file processing information in database."""
         try:
             # Clean content and summary to remove null bytes
@@ -335,7 +526,8 @@ class FileProcessingJob:
                 "listed_technology": metadata.get("listed_technology", []) if metadata else [],
                 "listed_company": metadata.get("listed_company", []) if metadata else [],
                 "important_news": metadata.get("important_news", []) if metadata else [],
-                "listed_timeline": metadata.get("listed_timeline", []) if metadata else []
+                "listed_timeline": metadata.get("listed_timeline", []) if metadata else [],
+                "responsible_departments": responsible_departments if responsible_departments else [],
             })
             
             # Update file record
