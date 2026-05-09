@@ -995,6 +995,13 @@ only files NOT present in `file_topics` with `(topic_id=<this>, is_matched=true)
 Intended for UI pickers that add files to a topic (hides files already in the topic).
 Both the `data` and `total` fields honor this filter. Omit or `null` to disable.
 
+**`store_id` (exclude-in-store):**
+When provided, the server FORCES `type='store'` (overriding any client `type`)
+and excludes files already in that store (`store_files.is_deleted=false`).
+Standard RBAC still applies: admin sees all type=store files, non-admin sees
+only their own. Intended for UI pickers that add files to a store. Both `data`
+and `total` honor this filter. Omit or `null` to disable.
+
 **Sort (`sort_by` + `sort_order`):** supports single or multi-field sorting.
 Fields: `created_at` (default), `size`. Direction: `desc` (default), `asc`.
 

@@ -107,8 +107,35 @@ def check_file_permission(file_obj, user_id: int, role_id: Optional[int]):
         raise PermissionError("Only the creator or admin can perform this action")
 
 
+def _parse_store_id_from_node_path(node_path: Optional[str]) -> Optional[int]:
+    """Extract `<id>` from a `store_<id>` segment in an existing node_path.
+
+    Files of type='store' carry their store binding in node_path because there
+    is no `files.store_id` column (file ↔ store is M-N via `store_files`).
+    When recomputing node_path on a move/rename, we preserve the original
+    store segment by parsing it back from the previous node_path.
+
+    Returns None if no `store_<digits>` segment is found.
+    """
+    if not node_path:
+        return None
+    for seg in node_path.split('/'):
+        if seg.startswith('store_'):
+            try:
+                return int(seg[len('store_'):])
+            except ValueError:
+                return None
+    return None
+
+
 async def compute_and_set_node_path(session: AsyncSession, file_obj):
-    """Compute node_path from file's type, role, user, folder and set it on the object."""
+    """Compute node_path from file's type, role, user, folder, store and set it.
+
+    For type='store', the store_id is preserved by parsing the existing
+    node_path (since there is no `files.store_id` column). Callers that
+    create a brand-new store-type file must set node_path themselves before
+    calling this helper, or the resulting path will lack the store segment.
+    """
     role_parent_path = None
     folder_parent_path = None
     if file_obj.role_id:
@@ -121,6 +148,11 @@ async def compute_and_set_node_path(session: AsyncSession, file_obj):
         row = r.first()
         if row:
             folder_parent_path = row[0]
+
+    store_id = None
+    if file_obj.type == "store":
+        store_id = _parse_store_id_from_node_path(file_obj.node_path)
+
     file_obj.node_path = compute_node_path(
         file_type=file_obj.type,
         role_id=file_obj.role_id,
@@ -128,6 +160,7 @@ async def compute_and_set_node_path(session: AsyncSession, file_obj):
         user_id=file_obj.created_by,
         folder_id=file_obj.folder_id,
         folder_parent_path=folder_parent_path,
+        store_id=store_id,
     )
 
 

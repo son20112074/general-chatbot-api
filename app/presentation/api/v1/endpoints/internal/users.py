@@ -53,23 +53,102 @@ async def query_users(
         )
 
 
-@router.get("/", response_model=Dict)
+@router.get(
+    "/",
+    response_model=Dict,
+    summary="List subordinate users (with optional share-context for a store)",
+    description=(
+        "Return paginated active users that the current caller is allowed to see "
+        "(admin sees all; non-admin sees only users in subordinate roles).\n\n"
+        "Search matches `full_name` or `account_name`.\n\n"
+        "**Optional `store_id` query**: when provided, the caller must be the owner "
+        "of that store, OR have an active share row. The endpoint then:\n"
+        "- LEFT JOINs `shared_store` on `(user_id, store_id, is_deleted=False)`.\n"
+        "- Adds `is_shared: bool` to every returned user.\n"
+        "- Orders results so users with `is_shared=true` appear first."
+    ),
+    responses={
+        404: {"description": "Store not found or not accessible"},
+    },
+)
 async def get_users(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
     search: Optional[str] = Query(default=None, description="Search by full_name or account_name"),
+    store_id: Optional[int] = Query(
+        default=None,
+        gt=0,
+        description="If set, returned users carry `is_shared` for this store and shared users sort first.",
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(get_current_user)
 ):
-    """Get subordinate users (flat list) with search. Admin gets all."""
     user_service = UserService(db)
-    result = await user_service.get_users(
-        skip=skip, limit=limit, search=search,
-        current_role_id=current_user.role_id
-    )
+    try:
+        result = await user_service.get_users(
+            skip=skip, limit=limit, search=search,
+            current_role_id=current_user.role_id,
+            current_user_id=current_user.user_id,
+            store_id=store_id,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+    # When store_id is provided, service returns plain dicts already including is_shared.
+    if store_id is not None:
+        return {"data": result["data"], "total": result["total"]}
+
     return {
         "data": [UserResponse.model_validate(u) for u in result["data"]],
         "total": result["total"]
+    }
+
+
+@router.get(
+    "/all/",
+    response_model=Dict,
+    summary="List ALL active users (flat, no role hierarchy)",
+    description=(
+        "Return every user with `status=True`, paginated. Unlike `GET /users/`, "
+        "this endpoint does NOT apply role-based RBAC: both admin and non-admin "
+        "callers see the full list.\n\n"
+        "Search matches `full_name` or `account_name` (case-insensitive).\n\n"
+        "**Optional `store_id`:** when provided, the caller must be the owner "
+        "of that store OR have an active share row. Each user gets an extra "
+        "`is_shared: bool` field, and shared users are sorted first."
+    ),
+    responses={
+        404: {"description": "Store not found or not accessible (only when store_id is set)"},
+    },
+)
+async def get_all_users(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=1000),
+    search: Optional[str] = Query(default=None, description="Search by full_name or account_name"),
+    store_id: Optional[int] = Query(
+        default=None,
+        gt=0,
+        description="If set, returned users carry `is_shared` for this store and shared users sort first.",
+    ),
+    db: AsyncSession = Depends(get_db),
+    current_user: TokenData = Depends(get_current_user),
+):
+    user_service = UserService(db)
+    try:
+        result = await user_service.get_all_users(
+            skip=skip, limit=limit, search=search,
+            current_user_id=current_user.user_id,
+            store_id=store_id,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+    if store_id is not None:
+        return {"data": result["data"], "total": result["total"]}
+
+    return {
+        "data": [UserResponse.model_validate(u) for u in result["data"]],
+        "total": result["total"],
     }
 
 
