@@ -21,8 +21,10 @@ class ReportTemplateCreate(BaseModel):
     @field_validator("creation_time")
     @classmethod
     def validate_creation_time(cls, v: Optional[time]) -> Optional[time]:
-        if v is not None and (v <= time(0, 0, 0) or v > time(23, 59, 59)):
-            raise ValueError("creation_time must be between 00:00:01 and 23:59:59")
+        if v is not None:
+            naive = v.replace(tzinfo=None)
+            if naive <= time(0, 0, 0) or naive > time(23, 59, 59):
+                raise ValueError("creation_time must be between 00:00:01 and 23:59:59")
         return v
 
 
@@ -41,8 +43,10 @@ class ReportTemplateUpdate(BaseModel):
     @field_validator("creation_time")
     @classmethod
     def validate_creation_time(cls, v: Optional[time]) -> Optional[time]:
-        if v is not None and (v <= time(0, 0, 0) or v > time(23, 59, 59)):
-            raise ValueError("creation_time must be between 00:00:01 and 23:59:59")
+        if v is not None:
+            naive = v.replace(tzinfo=None)
+            if naive <= time(0, 0, 0) or naive > time(23, 59, 59):
+                raise ValueError("creation_time must be between 00:00:01 and 23:59:59")
         return v
 
 
