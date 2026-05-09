@@ -18,13 +18,23 @@ def compute_node_path(
     user_id: Optional[int] = None,
     folder_id: Optional[int] = None,
     folder_parent_path: Optional[str] = None,
+    store_id: Optional[int] = None,
 ) -> str:
-    """Build node_path: type_<type>/role_<id>/.../user_<id>/folder_<id>/...
+    """Build node_path. Always returns a path with TRAILING `/`.
 
-    For `type=organization`, the path includes the role chain, then the
-    owning user (so the breadcrumb reflects the per-user node in the tree),
-    then the folder chain. For `private`/`general`, the user segment is
-    omitted — those types don't group by user in the tree.
+    Mirror of `_compute_node_path` in `general-chatbot-files`:
+
+      - `type=organization`: role chain → owning user → folder chain.
+      - `type=private`:      user segment → folder chain.
+      - `type=store`:        store segment (`store_<id>`) → folder chain.
+      - `type=general`:      no scope segment.
+
+    Examples:
+        type_private/user_3/
+        type_private/user_3/folder_5/folder_8/
+        type_store/store_1/
+        type_store/store_1/folder_5/
+        type_organization/role_1/role_2/user_3/folder_5/
     """
     parts = [f"type_{file_type}"]
     if role_id and file_type == "organization":
@@ -35,13 +45,17 @@ def compute_node_path(
         parts.append(f"role_{role_id}")
         if user_id:
             parts.append(f"user_{user_id}")
+    if user_id and file_type == "private":
+        parts.append(f"user_{user_id}")
+    if store_id and file_type == "store":
+        parts.append(f"store_{store_id}")
     if folder_id:
         if folder_parent_path:
             for fid in folder_parent_path.strip(',').split(','):
                 if fid:
                     parts.append(f"folder_{fid}")
         parts.append(f"folder_{folder_id}")
-    return "/".join(parts)
+    return "/".join(parts) + "/"
 
 
 class FolderService:
@@ -265,21 +279,27 @@ class FolderService:
         result = await self.db.execute(text("""
             SELECT f.id, f.type, f.role_id, f.created_by, f.folder_id,
                    r.parent_path as role_parent_path,
-                   fo.parent_path as folder_parent_path
+                   fo.parent_path as folder_parent_path,
+                   f.node_path
             FROM files f
             LEFT JOIN roles r ON r.id = f.role_id
             LEFT JOIN folders fo ON fo.id = f.folder_id
             WHERE (f.folder_id = :folder_id OR f.folder_id IN (SELECT id FROM folders WHERE parent_path LIKE :prefix || '%'))
               AND (f.is_deleted = false OR f.is_deleted IS NULL)
         """), {"folder_id": folder_id, "prefix": folder_prefix})
+        from app.utils.helpers import _parse_store_id_from_node_path
         for row in result.fetchall():
+            file_type = row[1]
+            old_node_path = row[7]
+            store_id = _parse_store_id_from_node_path(old_node_path) if file_type == "store" else None
             new_path = compute_node_path(
-                file_type=row[1],
+                file_type=file_type,
                 role_id=row[2],
                 role_parent_path=row[5],
                 user_id=row[3],
                 folder_id=row[4],
                 folder_parent_path=row[6],
+                store_id=store_id,
             )
             await self.db.execute(text("UPDATE files SET node_path = :np WHERE id = :fid"), {"np": new_path, "fid": row[0]})
 

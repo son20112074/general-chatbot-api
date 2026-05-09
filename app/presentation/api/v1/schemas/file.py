@@ -92,6 +92,19 @@ class FileListAllSchema(BaseModel):
         ),
     )
 
+    store_id: Optional[int] = Field(
+        default=None,
+        examples=[None, 7],
+        description=(
+            "Exclude files already in this store. Returns only files NOT "
+            "present in `store_files` with `(store_id=<this>, is_deleted=false)`. "
+            "When provided, the server FORCES `type='store'` regardless of "
+            "the `type` value sent by the client. Standard RBAC still applies: "
+            "admin sees all type=store files, non-admin sees only their own. "
+            "Use in UI pickers that add files to a store. Omit or null to disable."
+        ),
+    )
+
     started_node: Optional[int] = Field(
         default=None,
         examples=[None, 4],

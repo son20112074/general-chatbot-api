@@ -37,3 +37,27 @@ class TopicResponse(BaseModel):
 class TopicFileMatchRequest(BaseModel):
     topic_id: int = Field(..., gt=0)
     file_id: int = Field(..., gt=0)
+
+
+class TopicFileBulkRequest(BaseModel):
+    """Body for bulk add/remove of files into a topic.
+
+    `file_ids` must be non-empty. Duplicates are de-duplicated server-side
+    before processing.
+    """
+    topic_id: int = Field(..., gt=0, description="Target topic ID")
+    file_ids: list[int] = Field(..., min_length=1, description="List of file IDs to (un)match")
+
+
+class BulkUpsertResponse(BaseModel):
+    """Response for bulk add (insert + update) operations on join tables."""
+    inserted: int = 0
+    updated: int = 0
+    total: int = 0
+
+
+class BulkRemoveResponse(BaseModel):
+    """Response for bulk remove (soft-flag) operations on join tables."""
+    updated: int = 0
+    total: int = 0
+

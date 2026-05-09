@@ -14,14 +14,17 @@ class ReportTemplateCreate(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_indefinite: bool = True
+    is_use_timeline: bool = False
     file_mode: Literal["select", "by_period"] = "by_period"
     file_ids: Optional[List[int]] = None
 
     @field_validator("creation_time")
     @classmethod
     def validate_creation_time(cls, v: Optional[time]) -> Optional[time]:
-        if v is not None and (v <= time(0, 0, 0) or v > time(23, 59, 59)):
-            raise ValueError("creation_time must be between 00:00:01 and 23:59:59")
+        if v is not None:
+            naive = v.replace(tzinfo=None)
+            if naive <= time(0, 0, 0) or naive > time(23, 59, 59):
+                raise ValueError("creation_time must be between 00:00:01 and 23:59:59")
         return v
 
 
@@ -33,14 +36,17 @@ class ReportTemplateUpdate(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_indefinite: Optional[bool] = None
+    is_use_timeline: Optional[bool] = None
     file_mode: Optional[Literal["select", "by_period"]] = None
     file_ids: Optional[List[int]] = None
 
     @field_validator("creation_time")
     @classmethod
     def validate_creation_time(cls, v: Optional[time]) -> Optional[time]:
-        if v is not None and (v <= time(0, 0, 0) or v > time(23, 59, 59)):
-            raise ValueError("creation_time must be between 00:00:01 and 23:59:59")
+        if v is not None:
+            naive = v.replace(tzinfo=None)
+            if naive <= time(0, 0, 0) or naive > time(23, 59, 59):
+                raise ValueError("creation_time must be between 00:00:01 and 23:59:59")
         return v
 
 
@@ -53,6 +59,7 @@ class ReportTemplateResponse(BaseModel):
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     is_indefinite: bool
+    is_use_timeline: bool = False
     file_mode: str = "by_period"
     file_ids: Optional[List[int]] = None
     created_by: Optional[int] = None
