@@ -8,6 +8,7 @@ from datetime import datetime
 from dateutil import parser as date_parser
 from app.domain.models import User, Role as RoleModel, File as FileModel, Folder as FolderModel
 from app.domain.models.file_topic import FileTopic
+from app.domain.models.store_file import StoreFile
 from app.utils.tree_builder import make_tree
 from app.presentation.api.v1.schemas.file import FileListAllSchema
 from app.core.config import settings
@@ -383,14 +384,23 @@ class FileQueryService:
         user_role_id: int
     ):
         try:
+            # ── Force type='store' when store_id is provided ─────────
+            # When `store_id` is set, this is a "files-not-yet-in-this-store"
+            # picker query: the type is implied by the resource being filtered.
+            # Override any client-supplied `type`.
+            effective_type = "store" if query_params.store_id is not None else query_params.type
+
             # ── Per-type visibility ──────────────────────────────────
             # - organization: files at own role + subordinate roles (by role
             #   hierarchy). Uses file.role_id — NOT file.created_by — so
             #   historical files left behind by transferred users stay visible.
             # - private:      only creator
+            # - store:        only creator (mirror of private)
             # - general:      everyone (no owner filter)
-            # - admin:        sees everything regardless of type
-            if user_role_id == settings.ADMIN_ROLE_ID and query_params.type != "private":
+            # - admin:        sees everything regardless of type, except when
+            #                 explicitly filtering type=private (admin only sees
+            #                 their own private files — pre-existing behavior).
+            if user_role_id == settings.ADMIN_ROLE_ID and effective_type != "private":
                 visibility_filter = []
             else:
                 # Resolve subordinate role ids
@@ -413,6 +423,11 @@ class FileQueryService:
                         # private — only creator
                         and_(
                             FileModel.type == "private",
+                            FileModel.created_by == user_id,
+                        ),
+                        # store — only creator (mirror of private)
+                        and_(
+                            FileModel.type == "store",
                             FileModel.created_by == user_id,
                         ),
                         # organization at own role — same-role isolation:
@@ -472,9 +487,11 @@ class FileQueryService:
                 count_query = count_query.where(node_match)
 
             # ── type filter ──────────────────────────────────────────
-            if query_params.type:
-                query = query.where(FileModel.type == query_params.type)
-                count_query = count_query.where(FileModel.type == query_params.type)
+            # `effective_type` is the client `type` unless `store_id` forced it
+            # to "store" above.
+            if effective_type:
+                query = query.where(FileModel.type == effective_type)
+                count_query = count_query.where(FileModel.type == effective_type)
 
             # ── owner_name filter ────────────────────────────────────
             if query_params.owner_name:
@@ -517,6 +534,23 @@ class FileQueryService:
                 topic_excl = FileModel.id.notin_(matched_subq)
                 query = query.where(topic_excl)
                 count_query = count_query.where(topic_excl)
+
+            # ── store_id exclude filter ──────────────────────────────
+            # When store_id is provided, exclude files already in that store
+            # (store_files.is_deleted = FALSE). Used by UI pickers that add
+            # files to a store. type='store' is forced above; non-admin
+            # visibility further constrains to `created_by = current user`.
+            if query_params.store_id is not None:
+                in_store_subq = (
+                    select(StoreFile.file_id)
+                    .where(
+                        StoreFile.store_id == query_params.store_id,
+                        StoreFile.is_deleted == False,
+                    )
+                )
+                store_excl = FileModel.id.notin_(in_store_subq)
+                query = query.where(store_excl)
+                count_query = count_query.where(store_excl)
 
             # ── Sort (supports multiple fields: "size,created_at") ──
             sort_field_map = {

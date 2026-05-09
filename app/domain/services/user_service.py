@@ -5,6 +5,8 @@ from sqlalchemy import select, func, or_, and_
 import bcrypt
 from app.domain.models.user import User
 from app.domain.models.role import Role
+from app.domain.models.store import Store
+from app.domain.models.shared_store import SharedStore
 from app.core.config import settings
 from app.presentation.api.v1.schemas.user import UserCreate, UserUpdate, GetUsersQuery
 
@@ -92,40 +94,167 @@ class UserService:
         skip: int = 0,
         limit: int = 100,
         search: Optional[str] = None,
-        current_role_id: Optional[int] = None
+        current_role_id: Optional[int] = None,
+        current_user_id: Optional[int] = None,
+        store_id: Optional[int] = None,
     ) -> Dict:
         """Get subordinate users (flat). Admin gets all.
-        Search by full_name or account_name.
-        """
-        query = select(User).where(User.status == True)
-        count_query = select(func.count()).select_from(User).where(User.status == True)
 
-        # RBAC: non-admin sees only subordinate users (child roles, not peers)
+        Search by full_name or account_name.
+
+        When `store_id` is provided:
+        - Validate the store exists, is not deleted, and current user can read it
+          (owner OR active share recipient). Raises LookupError otherwise.
+        - Each returned user gets an extra `is_shared: bool` field, true iff there is
+          an active row in `shared_store` for that user and the given store.
+        - Results are ordered with `is_shared DESC` first, then by `User.id DESC`.
+        """
+        # Validate store visibility upfront when store_id is given.
+        if store_id is not None:
+            store_q = select(Store).where(Store.id == store_id, Store.is_deleted == False)
+            store = (await self.db.execute(store_q)).scalar_one_or_none()
+            if not store:
+                raise LookupError("Store not found")
+            if store.created_by != current_user_id:
+                share_q = select(SharedStore.id).where(
+                    SharedStore.store_id == store_id,
+                    SharedStore.user_id == current_user_id,
+                    SharedStore.is_deleted == False,
+                )
+                if (await self.db.execute(share_q)).scalar_one_or_none() is None:
+                    raise LookupError("Store not found")
+
+        # Build base WHERE used by both data and count queries.
+        base_where = [User.status == True]
+
         if current_role_id and current_role_id != ADMIN_ROLE_ID:
             child_role_ids = await self.get_child_roles(current_role_id)
             if child_role_ids:
-                query = query.where(User.role_id.in_(child_role_ids))
-                count_query = count_query.where(User.role_id.in_(child_role_ids))
+                base_where.append(User.role_id.in_(child_role_ids))
             else:
-                query = query.where(User.id == -1)
-                count_query = count_query.where(User.id == -1)
+                base_where.append(User.id == -1)
 
         if search:
             escaped = _escape_like(search)
-            search_filter = or_(
+            base_where.append(or_(
                 User.full_name.ilike(f"%{escaped}%"),
-                User.account_name.ilike(f"%{escaped}%")
+                User.account_name.ilike(f"%{escaped}%"),
+            ))
+
+        count_query = select(func.count()).select_from(User).where(*base_where)
+        total = (await self.db.execute(count_query)).scalar_one()
+
+        if store_id is not None:
+            share_join_cond = and_(
+                SharedStore.user_id == User.id,
+                SharedStore.store_id == store_id,
+                SharedStore.is_deleted == False,
             )
-            query = query.where(search_filter)
-            count_query = count_query.where(search_filter)
+            is_shared_expr = (SharedStore.id.isnot(None)).label("is_shared")
+            data_query = (
+                select(User, is_shared_expr)
+                .outerjoin(SharedStore, share_join_cond)
+                .where(*base_where)
+                .order_by(is_shared_expr.desc(), User.id.desc())
+                .offset(skip)
+                .limit(limit)
+            )
+            rows = (await self.db.execute(data_query)).all()
+            users = []
+            for u, is_shared in rows:
+                d = u.to_dict() if hasattr(u, "to_dict") else {
+                    c.name: getattr(u, c.name) for c in u.__table__.columns
+                }
+                d["is_shared"] = bool(is_shared)
+                users.append(d)
+            return {"data": users, "total": total}
 
-        total_result = await self.db.execute(count_query)
-        total = total_result.scalar_one()
-
-        query = query.order_by(User.id.desc()).offset(skip).limit(limit)
-        result = await self.db.execute(query)
+        # No store_id: legacy behavior — return ORM rows.
+        data_query = (
+            select(User).where(*base_where)
+            .order_by(User.id.desc()).offset(skip).limit(limit)
+        )
+        result = await self.db.execute(data_query)
         users = result.scalars().all()
+        return {"data": users, "total": total}
 
+    async def get_all_users(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        search: Optional[str] = None,
+        current_user_id: Optional[int] = None,
+        store_id: Optional[int] = None,
+    ) -> Dict:
+        """Flat list of ALL active users (no role hierarchy / RBAC).
+
+        Both admin and non-admin see every user with `status=True`.
+        Search matches `full_name` or `account_name`.
+
+        When `store_id` is provided:
+        - Validate the store exists, is not deleted, and current user can read
+          it (owner OR active share recipient). Raises LookupError otherwise.
+        - Each returned user gets an extra `is_shared: bool` field, true iff
+          there is an active row in `shared_store` for that user and the given
+          store.
+        - Results are ordered with `is_shared DESC` first, then `User.id DESC`.
+        """
+        if store_id is not None:
+            store_q = select(Store).where(Store.id == store_id, Store.is_deleted == False)
+            store = (await self.db.execute(store_q)).scalar_one_or_none()
+            if not store:
+                raise LookupError("Store not found")
+            if store.created_by != current_user_id:
+                share_q = select(SharedStore.id).where(
+                    SharedStore.store_id == store_id,
+                    SharedStore.user_id == current_user_id,
+                    SharedStore.is_deleted == False,
+                )
+                if (await self.db.execute(share_q)).scalar_one_or_none() is None:
+                    raise LookupError("Store not found")
+
+        base_where = [User.status == True]
+        if search:
+            escaped = _escape_like(search)
+            base_where.append(or_(
+                User.full_name.ilike(f"%{escaped}%"),
+                User.account_name.ilike(f"%{escaped}%"),
+            ))
+
+        count_query = select(func.count()).select_from(User).where(*base_where)
+        total = (await self.db.execute(count_query)).scalar_one()
+
+        if store_id is not None:
+            share_join_cond = and_(
+                SharedStore.user_id == User.id,
+                SharedStore.store_id == store_id,
+                SharedStore.is_deleted == False,
+            )
+            is_shared_expr = (SharedStore.id.isnot(None)).label("is_shared")
+            data_query = (
+                select(User, is_shared_expr)
+                .outerjoin(SharedStore, share_join_cond)
+                .where(*base_where)
+                .order_by(is_shared_expr.desc(), User.id.desc())
+                .offset(skip)
+                .limit(limit)
+            )
+            rows = (await self.db.execute(data_query)).all()
+            users = []
+            for u, is_shared in rows:
+                d = u.to_dict() if hasattr(u, "to_dict") else {
+                    c.name: getattr(u, c.name) for c in u.__table__.columns
+                }
+                d["is_shared"] = bool(is_shared)
+                users.append(d)
+            return {"data": users, "total": total}
+
+        data_query = (
+            select(User).where(*base_where)
+            .order_by(User.id.desc()).offset(skip).limit(limit)
+        )
+        result = await self.db.execute(data_query)
+        users = result.scalars().all()
         return {"data": users, "total": total}
 
     async def update_user(self, user_id: int, user_data: UserUpdate, current_role_id: int) -> Optional[User]:

@@ -16,6 +16,9 @@ from app.presentation.api.v1.endpoints.internal import db_connections
 from app.presentation.api.v1.endpoints.internal import graph
 from app.presentation.api.v1.endpoints.internal import topics
 from app.presentation.api.v1.endpoints.internal import topic_files
+from app.presentation.api.v1.endpoints.internal import stores
+from app.presentation.api.v1.endpoints.internal import store_files
+from app.presentation.api.v1.endpoints.internal import shared_store
 from app.presentation.api.v1.endpoints.internal import template_extraction
 from app.presentation.api.v1.endpoints.internal import reports
 
@@ -42,5 +45,8 @@ router.include_router(db_connections.router, prefix="/api/v1/db-connections", ta
 router.include_router(graph.router, prefix="/api/v1/graph", tags=["Knowledge Graph"])
 router.include_router(topics.router, prefix="/api/v1/topics", tags=["Topics"])
 router.include_router(topic_files.router, prefix="/api/v1/topic-files", tags=["Topic Files"])
+router.include_router(stores.router, prefix="/api/v1/stores", tags=["Stores"])
+router.include_router(store_files.router, prefix="/api/v1/store-files", tags=["Store Files"])
+router.include_router(shared_store.router, prefix="/api/v1/shared-store", tags=["Shared Store"])
 router.include_router(template_extraction.router, prefix="/api/v1/template-extraction", tags=["Template Extraction"])
 router.include_router(reports.router, prefix="/api/v1/reports", tags=["Reports"])
