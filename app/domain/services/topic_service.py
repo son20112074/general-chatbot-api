@@ -62,27 +62,22 @@ class TopicService:
         current_role_id: Optional[int] = None,
         current_user_id: Optional[int] = None
     ) -> Dict:
-        """Get subordinate topics (flat). Admin gets all.
+        """Get topics owned by the current user (flat). Applies to all roles
+        including admin — every caller only sees their own topics.
+
         Search by name or description.
         """
         query = (
             select(Topic, User.id.label("u_id"), User.full_name.label("u_name"))
             .outerjoin(User, Topic.created_by == User.id)
             .where(Topic.is_deleted == False))
-        
+
         count_query = select(func.count()).select_from(Topic).outerjoin(User, Topic.created_by == User.id).where(Topic.is_deleted == False)
 
-        # RBAC: non-admin sees only subordinate users (child roles, not peers) and users => new version: only current users
-        if current_role_id and current_role_id != ADMIN_ROLE_ID:
-            # child_role_ids = await self.get_child_roles(current_role_id)
-            
-            # owner
-            filter = (User.id == current_user_id)
-            # if child_role_ids:
-            #     filter = or_(User.role_id.in_(child_role_ids), filter)
-            
-            query = query.where(filter)
-            count_query = count_query.where(filter)
+        # Owner-only visibility (no admin bypass).
+        owner_filter = (User.id == current_user_id)
+        query = query.where(owner_filter)
+        count_query = count_query.where(owner_filter)
 
         if search:
             escaped = _escape_like(search)
@@ -102,16 +97,27 @@ class TopicService:
         rows = list(result)
 
         # Performance: aggregate file_total only over the paged topic IDs (not all topics).
-        # Index `idx_file_topics_topic_id` covers the topic_id IN (...) lookup;
-        # is_matched filter is applied during the index scan.
+        # Visibility must MATCH `topic_files_service.get_topic_files`:
+        #   - matched rows only (`FileTopic.is_matched=True`)
+        #   - underlying file not soft-deleted (`File.is_deleted=False`)
+        #   - non-owner sees only `File.type='organization'`; owner sees all types.
+        from app.domain.models.file import File as _File
         paged_topic_ids = [topic.id for topic, _u_id, _u_name in rows]
         totals_map: Dict[int, int] = {}
         if paged_topic_ids:
             totals_q = (
                 select(FileTopic.topic_id, func.count(FileTopic.id).label("file_total"))
+                .select_from(FileTopic)
+                .join(Topic, FileTopic.topic_id == Topic.id)
+                .join(_File, FileTopic.file_id == _File.id)
                 .where(
                     FileTopic.topic_id.in_(paged_topic_ids),
                     FileTopic.is_matched == True,
+                    _File.is_deleted == False,
+                    or_(
+                        Topic.created_by == current_user_id,  # owner: any file type
+                        _File.type == "organization",         # non-owner: organization only
+                    ),
                 )
                 .group_by(FileTopic.topic_id)
             )
