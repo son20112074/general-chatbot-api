@@ -42,14 +42,6 @@ REPORTS_STORAGE_PREFIX = "downloads/reports"
 _QUARTER_END_MONTHS = {3, 6, 9, 12}
 _QUARTER_START_MONTHS = {1, 4, 7, 10}
 
-# Minimum span (days) for a frequency cycle to be considered "large enough"
-_MIN_WINDOW_DAYS = {
-    FrequencyEnum.DAILY: 1,
-    FrequencyEnum.WEEKLY: 7,
-    FrequencyEnum.MONTHLY: 28,
-    FrequencyEnum.QUARTERLY: 90,
-}
-
 
 def _quarter_start(d: date) -> date:
     return d.replace(month=((d.month - 1) // 3) * 3 + 1, day=1)
@@ -66,7 +58,7 @@ def _is_last_day_of_quarter(d: date) -> bool:
 def _is_template_active(template: ReportTemplate, today: date) -> bool:
     if template.start_date and today < template.start_date:
         return False
-    if not template.is_indefinite and template.end_date and today > template.end_date:
+    if template.end_date and today > template.end_date:
         return False
     return True
 
@@ -573,6 +565,86 @@ Extract information from INPUT TEXT into structured Markdown following the templ
 
 # ── Per-frequency cycle ───────────────────────────────────────────────────────
 
+async def _run_select_mode_templates() -> None:
+    today = date.today()
+    now_time = datetime.now().time()
+
+    async with get_db_session() as session:
+        result = await session.execute(
+            select(ReportTemplate)
+            .where(ReportTemplate.file_mode == FileModeEnum.SELECT)
+            .order_by(ReportTemplate.id)
+        )
+        templates = list(result.scalars().all())
+
+        if not templates:
+            msg = "[ReportExport][select] No select-mode templates found"
+            logger.info(msg)
+            print(msg)
+            return
+
+        for template in templates:
+            if not _is_template_active(template, today):
+                msg = f"[ReportExport][select] Template {template.id} ({template.name}) inactive today, skipping"
+                logger.info(msg)
+                print(msg)
+                continue
+
+            ct = template.creation_time
+            if ct and now_time < ct:
+                msg = f"[ReportExport][select] Template {template.id} ({template.name}) skipped: creation_time {ct} not yet reached (now={now_time})"
+                logger.info(msg)
+                print(msg)
+                continue
+
+            period_start = period_end = today
+
+            existing_count = await session.scalar(
+                select(func.count()).select_from(Report)
+                .where(Report.template_id == template.id)
+                .where(Report.period_start == period_start)
+                .where(Report.period_end == period_end)
+            )
+            if existing_count:
+                msg = f"[ReportExport][select] Template {template.id} ({template.name}) report for {period_start} already exists, skipping"
+                logger.info(msg)
+                print(msg)
+                continue
+
+            if not template.created_by:
+                msg = f"[ReportExport][select] Template {template.id} ({template.name}) has no creator, skipping"
+                logger.warning(msg)
+                print(msg)
+                continue
+
+            user_result = await session.execute(
+                select(User.id, User.role_id).where(
+                    User.id == template.created_by,
+                    User.status == True,
+                )
+            )
+            user_row = user_result.first()
+            if not user_row:
+                msg = f"[ReportExport][select] Creator (id={template.created_by}) for template {template.id} not found or inactive, skipping"
+                logger.warning(msg)
+                print(msg)
+                continue
+
+            files = await _get_files_for_template(
+                session, template, user_row.id, user_row.role_id, period_start, period_end
+            )
+            if not files:
+                msg = f"[ReportExport][select] Template {template.id} ({template.name}) — no files selected, skipping"
+                logger.info(msg)
+                print(msg)
+                continue
+
+            msg = f"[ReportExport][select] Template {template.id} ({template.name}) | user_id={user_row.id} | {len(files)} file(s)"
+            logger.info(msg)
+            print(msg)
+            await _process_template(session, template, files, period_start, period_end)
+
+
 async def _run_for_frequency(frequency: FrequencyEnum) -> None:
     today = date.today()
     now_time = datetime.now().time()
@@ -581,6 +653,7 @@ async def _run_for_frequency(frequency: FrequencyEnum) -> None:
         result = await session.execute(
             select(ReportTemplate)
             .where(ReportTemplate.frequency == frequency)
+            .where(ReportTemplate.file_mode == FileModeEnum.BY_PERIOD)
             .order_by(ReportTemplate.id)
         )
         templates = list(result.scalars().all())
@@ -598,28 +671,9 @@ async def _run_for_frequency(frequency: FrequencyEnum) -> None:
                 print(msg)
                 continue
 
-            if template.is_indefinite:
-                if not _should_run_today(template, today, now_time):
-                    continue
-                period_start, period_end = _compute_period(frequency, today)
-            else:
-                period_start = template.start_date or today
-                period_end = template.end_date or today
-                span = (period_end - period_start).days
-                # Always enforce creation_time gate.
-                # Only enforce the frequency day-of-week/month gate when the
-                # window is large enough to form a full cycle.
-                ct = template.creation_time
-                if ct and now_time < ct:
-                    msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) skipped: creation_time {ct} not yet reached (now={now_time})"
-                    logger.info(msg)
-                    print(msg)
-                    continue
-                if span >= _MIN_WINDOW_DAYS.get(frequency, 1):
-                    # creation_time already checked above; pass time.max so
-                    # _should_run_today's internal time gate always passes.
-                    if not _should_run_today(template, today, time.max):
-                        continue
+            if not _should_run_today(template, today, now_time):
+                continue
+            period_start, period_end = _compute_period(frequency, today)
 
             # Idempotency: skip if a report for this period already exists
             existing_count = await session.scalar(
@@ -738,6 +792,7 @@ async def report_export_daily_job() -> None:
         logger.info(msg)
         print(msg)
         await _run_for_frequency(FrequencyEnum.DAILY)
+        await _run_select_mode_templates()
         msg = "[ReportExport] Daily job finished"
         logger.info(msg)
         print(msg)

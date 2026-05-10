@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 class ReportTemplateCreate(BaseModel):
     name: str = Field(..., max_length=255)
     description: Optional[str] = None
-    frequency: str = Field(..., description="daily | weekly | monthly | quarterly")
+    frequency: Optional[str] = Field(None, description="daily | weekly | monthly | quarterly")
     creation_time: Optional[time] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
