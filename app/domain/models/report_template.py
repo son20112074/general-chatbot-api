@@ -36,7 +36,7 @@ class ReportTemplate(Base):
     description = Column(Text, nullable=True)
     frequency = Column(
         SAEnum(FrequencyEnum, native_enum=False, length=20, values_callable=lambda e: [m.value for m in e]),
-        nullable=False,
+        nullable=True,
     )
     # creation_day = Column(
     #     SAEnum(CreationDayEnum, native_enum=False, length=20, values_callable=lambda e: [m.value for m in e]),
