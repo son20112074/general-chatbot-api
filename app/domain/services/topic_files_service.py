@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.domain.models.topic import Topic
 from app.domain.models.file import File
 from app.domain.models.file_topic import FileTopic
+from app.utils.helpers import build_file_item
 
 ADMIN_ROLE_ID = settings.ADMIN_ROLE_ID
 
@@ -90,7 +91,7 @@ class TopicFilesService:
         files = []
 
         for file, u_id, u_name in result:
-            files.append(self._build_file_item(file, u_id, u_name))
+            files.append(build_file_item(file, u_id, u_name))
 
         return {"data": files, "total": total}
     
@@ -264,20 +265,3 @@ class TopicFilesService:
             await self.db.rollback()
             raise
 
-    def _build_file_item(self, f, u_id, u_name) -> dict:
-        """Build a file list item dict from a File ORM object and owner info."""
-        return {
-            "id": f.id, "name": f.name, "size": f.size,
-            "hash": f.hash, "path": f.path,
-            "url": f.url,
-            "extension": f.extension, "mime_type": f.mime_type,
-            "node_path": f.node_path,
-            "owner": {"id": u_id, "full_name": u_name} if u_id else None,
-            "created_at": f.created_at.isoformat() if f.created_at else None,
-            "updated_at": f.updated_at.isoformat() if f.updated_at else None,
-            "is_processed": f.is_processed,
-            "processing_duration": f.processing_duration,
-            "content": f.content,
-            "summary": f.summary,
-        }
-    
