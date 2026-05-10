@@ -740,17 +740,12 @@ class FolderService:
     # ── private helpers ──────────────────────────────────────
 
     def _file_to_node(self, f: File, owner_id: int, owner_name: str) -> Dict[str, Any]:
-        return {
-            "node_type": "file", "id": f.id, "name": f.name,
-            "size": f.size, "hash": f.hash, "path": f.path, "url": f.url,
-            "extension": f.extension, "mime_type": f.mime_type,
-            "node_path": f.node_path,
-            "owner": {"id": owner_id, "full_name": owner_name} if owner_id else None,
-            "created_at": f.created_at.isoformat() if f.created_at else None,
-            "updated_at": f.updated_at.isoformat() if f.updated_at else None,
-            "is_processed": f.is_processed, "processing_duration": f.processing_duration,
-            "content": f.content, "summary": f.summary,
-        }
+        """File-as-tree-node payload. Reuses the shared `build_file_item` so
+        that file fields stay in sync with all other listing endpoints; only
+        the tree-specific `node_type` marker is added on top.
+        """
+        from app.utils.helpers import build_file_item
+        return {"node_type": "file", **build_file_item(f, owner_id, owner_name)}
 
     async def _role_has_children(self, role_id: int, role_parent_path: Optional[str]) -> bool:
         """A role node has children if it has any user OR any child role."""
