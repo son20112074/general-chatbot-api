@@ -1,0 +1,37 @@
+[
+  {
+    "code": "legal",
+    "name": "Pháp chế",
+    "description": "Phân loại tài liệu liên quan rà soát hợp đồng, tuân thủ quy định và xử lý vấn đề pháp lý."
+  },
+  {
+    "code": "finance_accounting",
+    "name": "Tài chính - Kế toán",
+    "description": "Phân loại tài liệu liên quan Quản lý ngân sách, hóa đơn, thanh toán, báo cáo tài chính và quyết toán."
+  },
+  {
+    "code": "human_resources",
+    "name": "Nhân sự",
+    "description": "Phân loại tài liệu liên quanTuyển dụng, đào tạo, chính sách nhân sự, lương thưởng và quản lý hồ sơ nhân viên."
+  },
+  {
+    "code": "procurement",
+    "name": "Mua sắm",
+    "description": "Phân loại tài liệu liên quan Lập kế hoạch mua hàng, làm việc với nhà cung cấp và quản lý hợp đồng mua sắm."
+  },
+  {
+    "code": "it",
+    "name": "Công nghệ thông tin",
+    "description": "Phân loại tài liệu liên quan Vận hành hệ thống CNTT, bảo mật, hạ tầng và hỗ trợ kỹ thuật nội bộ."
+  },
+  {
+    "code": "tech-news",
+    "name": "Tin tức vũ khí và công nghệ cao",
+    "description": "Phân loại tài liệu liên quan thu thập thông tin vũ khí và công nghệ cao"
+  },
+  {
+    "code": "domestic-news",
+    "name": "Tin tức trong nước",
+    "description": "Phân loại tài liệu liên quan thu thập thông tin trong nước"
+  }
+]
