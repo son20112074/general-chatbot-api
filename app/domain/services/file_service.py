@@ -10,6 +10,7 @@ from app.domain.models import User, Role as RoleModel, File as FileModel, Folder
 from app.domain.models.file_topic import FileTopic
 from app.domain.models.store_file import StoreFile
 from app.utils.tree_builder import make_tree
+from app.utils.helpers import build_file_item
 from app.presentation.api.v1.schemas.file import FileListAllSchema
 from app.core.config import settings
 
@@ -570,26 +571,10 @@ class FileQueryService:
             query = query.order_by(*order_clauses).offset(offset).limit(query_params.page_size)
 
             items = [
-                self._build_file_item(row[0], row.u_id, row.u_name)
+                build_file_item(row[0], row.u_id, row.u_name)
                 for row in (await self.db.execute(query)).all()
             ]
             return {"data": items, "total": total, "message": "succeeded"}
         except Exception as e:
             raise e
         
-    def _build_file_item(self, f, u_id, u_name) -> dict:
-        """Build a file list item dict from a File ORM object and owner info."""
-        return {
-            "id": f.id, "name": f.name, "size": f.size,
-            "hash": f.hash, "path": f.path,
-            "url": f.url,
-            "extension": f.extension, "mime_type": f.mime_type,
-            "node_path": f.node_path,
-            "owner": {"id": u_id, "full_name": u_name} if u_id else None,
-            "created_at": f.created_at.isoformat() if f.created_at else None,
-            "updated_at": f.updated_at.isoformat() if f.updated_at else None,
-            "is_processed": f.is_processed,
-            "processing_duration": f.processing_duration,
-            "content": f.content,
-            "summary": f.summary,
-        }
