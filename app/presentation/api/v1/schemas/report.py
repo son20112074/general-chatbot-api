@@ -54,7 +54,7 @@ class ReportTemplateResponse(BaseModel):
     id: int
     name: str
     description: Optional[str] = None
-    frequency: str
+    frequency: Optional[str] = None
     creation_time: Optional[time] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None

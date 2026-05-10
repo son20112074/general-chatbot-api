@@ -27,13 +27,14 @@ class ReportService:
     async def create_template(
         self, data: ReportTemplateCreate, created_by: int
     ) -> ReportTemplate:
+        is_select = data.file_mode == "select"
         template = ReportTemplate(
             name=data.name,
             description=data.description,
-            frequency=FrequencyEnum(data.frequency),
+            frequency=None if is_select else (FrequencyEnum(data.frequency) if data.frequency else None),
             creation_time=data.creation_time,
-            start_date=data.start_date,
-            end_date=data.end_date,
+            start_date=None if is_select else data.start_date,
+            end_date=None if is_select else data.end_date,
             is_indefinite=data.is_indefinite,
             file_mode=FileModeEnum(data.file_mode),
             file_ids=data.file_ids,
@@ -85,6 +86,12 @@ class ReportService:
             update_data["frequency"] = FrequencyEnum(update_data["frequency"])
         if "file_mode" in update_data and update_data["file_mode"] is not None:
             update_data["file_mode"] = FileModeEnum(update_data["file_mode"])
+
+        effective_mode = update_data.get("file_mode", template.file_mode)
+        if effective_mode == FileModeEnum.SELECT:
+            update_data["frequency"] = None
+            update_data["start_date"] = None
+            update_data["end_date"] = None
 
         for field, value in update_data.items():
             setattr(template, field, value)
