@@ -50,17 +50,17 @@ class StoreService:
         current_role_id: Optional[int] = None,
         current_user_id: Optional[int] = None,
     ) -> Dict:
-        """List stores visible to current user.
+        """List stores visible to current user (applies to ALL roles, no admin bypass).
 
         Visibility:
-          - Admin: all non-deleted stores.
-          - Non-admin: stores `created_by = current_user`
-            OR stores actively shared with `current_user` (via shared_store).
+          - Every caller (including admin) sees only:
+            * stores `created_by = current_user`, OR
+            * stores actively shared with `current_user` via `shared_store`.
         Search by name or description.
         Each row contains `file_total` (count of `store_files.is_deleted=False`).
         """
         # LEFT JOIN shared_store ONLY for current user (so we can compute is_shared
-        # and use it in the visibility WHERE clause for non-admins).
+        # and use it in the visibility WHERE clause).
         share_join_cond = and_(
             SharedStore.store_id == Store.id,
             SharedStore.user_id == current_user_id,
@@ -68,6 +68,12 @@ class StoreService:
         )
 
         is_shared_expr = (SharedStore.id.isnot(None)).label("is_shared")
+
+        # Owner OR shared — enforced for every role including admin.
+        visibility = or_(
+            Store.created_by == current_user_id,
+            SharedStore.id.isnot(None),
+        )
 
         base = (
             select(
@@ -78,23 +84,15 @@ class StoreService:
             )
             .outerjoin(User, Store.created_by == User.id)
             .outerjoin(SharedStore, share_join_cond)
-            .where(Store.is_deleted == False)
+            .where(Store.is_deleted == False, visibility)
         )
 
         count_query = (
             select(func.count())
             .select_from(Store)
             .outerjoin(SharedStore, share_join_cond)
-            .where(Store.is_deleted == False)
+            .where(Store.is_deleted == False, visibility)
         )
-
-        if current_role_id and current_role_id != ADMIN_ROLE_ID:
-            visibility = or_(
-                Store.created_by == current_user_id,
-                SharedStore.id.isnot(None),
-            )
-            base = base.where(visibility)
-            count_query = count_query.where(visibility)
 
         if search:
             escaped = _escape_like(search)
