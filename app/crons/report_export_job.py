@@ -761,15 +761,21 @@ async def test_report_export_weekly() -> None:
             logger.info(msg)
             print(msg)
 
-            files = (await _get_visible_files(session, user_row.id, user_row.role_id, period_start, period_end))[:2]
+            # TODO: insert file IDs to test with
+            file_ids: list[int] = [32,33]
+
+            files_result = await session.execute(
+                select(FileModel).where(FileModel.id.in_(file_ids))
+            )
+            files = list(files_result.scalars().all())
 
             if not files:
-                msg = f"[TestReportExport] No files found in {period_start} → {period_end}, aborting"
+                msg = "[TestReportExport] No files found for the given file_ids, aborting"
                 logger.warning(msg)
                 print(msg)
                 return
 
-            msg = f"[TestReportExport] Using {len(files)} file(s) (latest 2) — starting extraction"
+            msg = f"[TestReportExport] Using {len(files)} file(s) — starting extraction"
             logger.info(msg)
             print(msg)
 
