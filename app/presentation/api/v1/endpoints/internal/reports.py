@@ -24,7 +24,7 @@ def _serialize_report(report) -> ReportResponse:
         name=report.name,
         template_id=report.template_id,
         template_name=report.template.name if report.template else None,
-        frequency=report.template.frequency.value if report.template else None,
+        frequency=report.template.frequency.value if report.template and report.template.frequency else None,
         content=report.content,
         status=report.status.value,
         period_start=report.period_start,
