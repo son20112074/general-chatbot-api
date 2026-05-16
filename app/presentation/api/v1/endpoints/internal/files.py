@@ -977,7 +977,10 @@ Recursive — any file anywhere below that node is returned.
 **Search (`search_text`):** case-insensitive OR across file name, containing folder name,
 owner full_name, and pinned role name.
 
-**Filters:** `type`, `owner_name`, `is_processed`, `topic_id`. All optional.
+**Filters:** `type`, `owner_name`, `is_processed`, `topic_id`, `store_id`, `ids`. All optional.
+
+**`ids`:** when provided, restricts results to that exact set of file IDs.
+Empty list returns no rows. Combines with all other filters.
 
 **`is_processed`:**
 - `true` → only processed files
