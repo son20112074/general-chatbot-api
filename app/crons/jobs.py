@@ -53,7 +53,7 @@ def register_jobs(scheduler: AsyncIOScheduler):
     scheduler.add_job(
         report_export_daily_job,
         trigger="cron",
-        hour=2,
+       hour=22,
         minute=0,
         id="report_export_daily",
         name="Report Export (Daily)",
