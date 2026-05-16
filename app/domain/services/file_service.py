@@ -494,6 +494,14 @@ class FileQueryService:
                 query = query.where(FileModel.type == effective_type)
                 count_query = count_query.where(FileModel.type == effective_type)
 
+            # ── ids filter ───────────────────────────────────────────
+            # Restrict to a specific set of file IDs. Empty list returns
+            # nothing (caller asked for an empty subset, not "no filter").
+            if query_params.ids is not None:
+                ids_cond = FileModel.id.in_(query_params.ids) if query_params.ids else FileModel.id.in_([-1])
+                query = query.where(ids_cond)
+                count_query = count_query.where(ids_cond)
+
             # ── owner_name filter ────────────────────────────────────
             if query_params.owner_name:
                 owner_cond = User.full_name.ilike(f"%{query_params.owner_name}%")
