@@ -216,6 +216,7 @@ class SummaryService:
                     - Using a scientific and formal writing style, presented in well-structured paragraphs.
                     - Do not use bullet points or tables markdown format in the summary.
                     - Separate each paragraph by a new line.
+                    - Do not add the phrase 'Dưới đây là bản tóm tắt' at the beginning of the summary.
             """
 
             messages = [
