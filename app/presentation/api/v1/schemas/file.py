@@ -105,6 +105,16 @@ class FileListAllSchema(BaseModel):
         ),
     )
 
+    ids: Optional[List[int]] = Field(
+        default=None,
+        examples=[None, [1, 2, 3]],
+        description=(
+            "Filter to specific file IDs. When provided, only files whose `id` "
+            "is in this list are returned. Empty list returns nothing. Combines "
+            "with all other filters (RBAC, type, topic_id, store_id, etc.)."
+        ),
+    )
+
     started_node: Optional[int] = Field(
         default=None,
         examples=[None, 4],
