@@ -115,6 +115,16 @@ class FileListAllSchema(BaseModel):
         ),
     )
 
+    departments: Optional[List[str]] = Field(
+        default=None,
+        examples=[None, ["IT", "Kế toán"]],
+        description=(
+            "Filter by `responsible_departments` (case-insensitive). Matches "
+            "files whose array contains AT LEAST ONE element equal to any of "
+            "the provided values (OR semantics). Empty list returns no rows."
+        ),
+    )
+
     started_node: Optional[int] = Field(
         default=None,
         examples=[None, 4],
