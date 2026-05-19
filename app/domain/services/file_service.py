@@ -502,6 +502,24 @@ class FileQueryService:
                 query = query.where(ids_cond)
                 count_query = count_query.where(ids_cond)
 
+            # ── departments filter (case-insensitive OR over array) ──
+            # Matches files whose `responsible_departments` array contains
+            # AT LEAST ONE element equal (case-insensitive) to any value in
+            # the provided list. Empty list → no rows.
+            if query_params.departments is not None:
+                if not query_params.departments:
+                    dep_cond = text("FALSE")
+                else:
+                    # Lowercase both sides; compare via array overlap on the
+                    # lower(unnest) result.
+                    lowered = [d.lower() for d in query_params.departments]
+                    dep_cond = text(
+                        "EXISTS (SELECT 1 FROM unnest(files.responsible_departments) AS d "
+                        "WHERE lower(d) = ANY(:dept_lowered))"
+                    ).bindparams(dept_lowered=lowered)
+                query = query.where(dep_cond)
+                count_query = count_query.where(dep_cond)
+
             # ── owner_name filter ────────────────────────────────────
             if query_params.owner_name:
                 owner_cond = User.full_name.ilike(f"%{query_params.owner_name}%")
