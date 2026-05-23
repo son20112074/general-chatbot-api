@@ -495,7 +495,7 @@ JSON:"""
         - Prefer approximate mapping over null
         - null is ONLY allowed if absolutely no related information exists
 
-        - Each LEAF section MUST contain at least 4-8 detailed paragraphs
+        - Each LEAF section MUST contain at least 4-8 detailed paragraphs, EXCEPT sections whose title contains summary/conclusion/finalize/final/evaluation/đánh giá/kết luận/tổng kết/tổng hợp/kiến nghị — those need only 2-3 paragraphs
         - Each paragraph must have multiple sentences covering different aspects of the topic
         - Include all relevant facts, context, background, implications, and details from the input
         - Separate paragraphs with a blank line
@@ -553,7 +553,7 @@ Fill the provided JSON template with information extracted from the input docume
 ## RULES
 - Return ONLY valid JSON that exactly matches the template structure
 - Keep ALL keys — do not add or omit any
-- Fill each leaf (currently null) with at least 4-8 detailed Vietnamese paragraphs covering all relevant facts, figures, context, background, and implications from the input. Separate paragraphs with \n\n
+- Fill each leaf (currently null) with at least 4-8 detailed Vietnamese paragraphs covering all relevant facts, figures, context, background, and implications from the input. Separate paragraphs with \n\n. EXCEPTION: if the leaf key contains summary/conclusion/finalize/final/evaluation/đánh giá/kết luận/tổng kết/tổng hợp/kiến nghị, use only 2-3 paragraphs
 - If no information is available for a key → keep its value as null
 - Do NOT wrap the output in markdown code fences
 - Do NOT explain
