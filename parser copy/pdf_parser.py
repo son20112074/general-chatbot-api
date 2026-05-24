@@ -3,7 +3,7 @@ PDF Parser Module
 
 This module contains the PDFParser class for parsing PDF documents.
 - Text-based PDFs: Uses PyMuPDF (fitz) to extract text directly
-- Image-based PDFs: PaddleOCR-VL vLLM server only (same pipeline as image_parser; no local Tesseract)
+- Image-based PDFs: Uses PaddleOCR-VL vLLM server (same as image_parser)
 """
 
 import logging
@@ -30,21 +30,6 @@ def _is_paddle_available() -> bool:
         return bool(PADDLEOCR_AVAILABLE)
     except Exception:
         return False
-
-
-def _paddle_missing_result() -> Dict[str, Any]:
-    """Same stack as image parsing: client + PADDLEOCR_VL_SERVER_URL vLLM endpoint."""
-    return {
-        "success": False,
-        "error": (
-            "Image-based PDFs require PaddleOCR-VL (vLLM server), same as image parsing. "
-            'Install: pip install -U "paddleocr[doc-parser]". '
-            "Set PADDLEOCR_VL_SERVER_URL to your OpenAI-compatible vLLM base URL "
-            "(see image_parser / app settings)."
-        ),
-        "content": "",
-        "summary": "",
-    }
 
 
 class PDFParser:
@@ -119,6 +104,42 @@ class PDFParser:
             res.print()
         return collect_text(output)
 
+    def _extract_text_from_image_pdf_tesseract(self, file_path: Union[str, Path]) -> str:
+        """Fallback OCR: render each PDF page to image at 300 DPI, then run pytesseract."""
+        try:
+            import pytesseract
+        except ImportError as exc:
+            raise ImportError(f"pytesseract is required for OCR fallback: {exc}")
+
+        parts: list = []
+
+        if fitz is not None:
+            import io
+            from PIL import Image
+            doc = fitz.open(str(file_path))
+            try:
+                for page in doc:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))
+                    img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    text = pytesseract.image_to_string(img, lang="vie+eng")
+                    if text.strip():
+                        parts.append(text.strip())
+            finally:
+                doc.close()
+        else:
+            # fitz not installed — use pdf2image (requires poppler)
+            try:
+                from pdf2image import convert_from_path
+            except ImportError as exc:
+                raise ImportError(f"pdf2image is required when PyMuPDF is not installed: {exc}")
+            images = convert_from_path(str(file_path), dpi=300)
+            for img in images:
+                text = pytesseract.image_to_string(img, lang="vie+eng")
+                if text.strip():
+                    parts.append(text.strip())
+
+        return "\n\n".join(parts)
+
     def parse_pdf(self, file_path: Union[str, Path]) -> Dict[str, Any]:
         """
         Parse PDF documents (.pdf).
@@ -148,14 +169,13 @@ class PDFParser:
             is_image_based = self._is_image_based_pdf(file_path)
 
             if is_image_based:
-                if not _is_paddle_available():
-                    logger.error(
-                        "Image-based PDF requires PaddleOCR-VL; not installed or import failed: %s",
-                        file_path,
-                    )
-                    return _paddle_missing_result()
-                combined_content = self._extract_text_from_image_pdf(file_path)
-                parsed_with = "paddleocr-vl"
+                if _is_paddle_available():
+                    combined_content = self._extract_text_from_image_pdf(file_path)
+                    parsed_with = "paddleocr-vl"
+                else:
+                    logger.info("PaddleOCR not available, falling back to pytesseract for image-based PDF: %s", file_path)
+                    combined_content = self._extract_text_from_image_pdf_tesseract(file_path)
+                    parsed_with = "pytesseract"
             else:
                 if fitz is not None:
                     combined_content = self._extract_text_from_pdf(file_path)

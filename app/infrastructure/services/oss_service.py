@@ -87,7 +87,7 @@ class OpenRouterClient:
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{self.api_base}/chat/completions",
+                f"{self.api_base}",
                 headers=headers,
                 json=payload,
                 timeout=30.0
