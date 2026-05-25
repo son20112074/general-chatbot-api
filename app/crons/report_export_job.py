@@ -795,7 +795,6 @@ async def report_export_daily_job() -> None:
         logger.info(msg)
         print(msg)
         await _run_for_frequency(FrequencyEnum.DAILY)
-        await _run_select_mode_templates()
         msg = "[ReportExport] Daily job finished"
         logger.info(msg)
         print(msg)
