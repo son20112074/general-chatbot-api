@@ -72,11 +72,6 @@ class ReportTemplateResponse(BaseModel):
 
 # ── Report ────────────────────────────────────────────────────────────────────
 
-class RunReportOnceRequest(BaseModel):
-    template_id: int
-    file_ids: List[int] = Field(..., min_length=1, description="IDs of files to include in the report")
-
-
 class ReportDocumentCreate(BaseModel):
     document_id: Optional[int] = None
     document_name: Optional[str] = None
