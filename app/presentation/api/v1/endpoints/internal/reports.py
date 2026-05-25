@@ -1,10 +1,14 @@
 from datetime import date
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_db, get_db_session
+from app.crons.report_export_job import _process_template
+from app.domain.models.file import File as FileModel
+from app.domain.models.report_template import ReportTemplate
 from app.infrastructure.services.report_service import ReportService
 from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.report import (
@@ -13,6 +17,7 @@ from app.presentation.api.v1.schemas.report import (
     ReportTemplateCreate,
     ReportTemplateResponse,
     ReportTemplateUpdate,
+    RunReportOnceRequest,
 )
 
 router = APIRouter()
@@ -130,6 +135,48 @@ async def delete_template(
 
 
 # ── Reports ───────────────────────────────────────────────────────────────────
+
+async def _run_report_once_bg(template_id: int, file_ids: List[int]) -> None:
+    today = date.today()
+    async with get_db_session() as session:
+        tpl_result = await session.execute(
+            select(ReportTemplate).where(ReportTemplate.id == template_id)
+        )
+        template = tpl_result.scalar_one_or_none()
+        if not template:
+            return
+
+        files_result = await session.execute(
+            select(FileModel).where(
+                FileModel.id.in_(file_ids),
+                or_(FileModel.is_deleted == False, FileModel.is_deleted == None),
+                FileModel.content.isnot(None),
+                FileModel.content != "",
+            )
+        )
+        files = list(files_result.scalars().all())
+        if not files:
+            return
+
+        await _process_template(session, template, files, today, today)
+
+
+@router.post("/run", status_code=status.HTTP_202_ACCEPTED, tags=["Reports"])
+async def run_report_once(
+    data: RunReportOnceRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    service = ReportService(db)
+    template = await service.get_template(data.template_id)
+    if not template:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+    _assert_template_owner(template, current_user.user_id)
+
+    background_tasks.add_task(_run_report_once_bg, data.template_id, data.file_ids)
+    return {"message": "Report generation started"}
+
 
 @router.get("", response_model=Dict, tags=["Reports"])
 async def list_reports(
