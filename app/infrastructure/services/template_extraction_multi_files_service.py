@@ -63,7 +63,9 @@ class TemplateExtractionMultiFilesService:
         template_tree: Optional[Dict] = None
         if template_file_path:
             template_text = self._extraction_service._load_document_text(template_file_path)
-            template_tree = await self._extract_template_tree_via_llm(template_text)
+            template_tree = self._normalize_tree_keys(
+                await self._extract_template_tree_via_llm(template_text)
+            )
 
             logger.info("multi_extract:template_tree_loaded top_keys=%s", len(template_tree))
 
@@ -76,7 +78,9 @@ class TemplateExtractionMultiFilesService:
         # Description is not in "- bullet" format → build hierarchical tree from it via LLM
         if not template_keys and not template_tree and report_template:
             logger.info("multi_extract:template_keys_empty — building tree from description via LLM")
-            template_tree = await self._extract_template_tree_via_llm(report_template)
+            template_tree = self._normalize_tree_keys(
+                await self._extract_template_tree_via_llm(report_template)
+            )
             template_keys = self._flatten_tree_keys(template_tree) if template_tree else []
             logger.info(
                 "multi_extract:template_tree_from_desc top_keys=%s flat_keys=%s",
@@ -308,6 +312,20 @@ JSON:"""
         return root
 
     @staticmethod
+    def _capitalize_key(key: str) -> str:
+        if not key:
+            return key
+        return key[0].upper() + key[1:]
+
+    @classmethod
+    def _normalize_tree_keys(cls, tree: Dict) -> Dict:
+        """Recursively capitalize the first letter of every key in the template tree."""
+        return {
+            cls._capitalize_key(k): cls._normalize_tree_keys(v) if isinstance(v, dict) else v
+            for k, v in tree.items()
+        }
+
+    @staticmethod
     def _flatten_tree_keys(tree: Dict, prefix: str = "") -> List[str]:
         """Return all leaf-node paths joined by ' > ' (for flat-key compatibility)."""
         keys: List[str] = []
@@ -446,10 +464,10 @@ JSON:"""
             )
         print(template_section)
         return f"""## ROLE
-        You are an expert in information clustering, deduplication, and compression.
+        You are an expert in information synthesis and report writing.
 
         ## GOAL
-        Summarize and compress the input into a concise report that STRICTLY follows the given template.
+        Synthesize the input into a comprehensive, detailed report that STRICTLY follows the given template.
 
         ---
 
@@ -477,9 +495,12 @@ JSON:"""
         - Prefer approximate mapping over null
         - null is ONLY allowed if absolutely no related information exists
 
-        - Each LEAF section SHOULD contain one concise paragraph
+        - Each LEAF section MUST contain at least 4-8 detailed paragraphs, EXCEPT sections whose title contains summary/conclusion/finalize/final/evaluation/đánh giá/kết luận/tổng kết/tổng hợp/kiến nghị — those need only 2-3 paragraphs
+        - Each paragraph must have multiple sentences covering different aspects of the topic
+        - Include all relevant facts, context, background, implications, and details from the input
+        - Separate paragraphs with a blank line
         - NO bullet points
-        - NO explanations
+        - NO explanations about the writing process
         - Vietnamese only
 
         ---
@@ -488,15 +509,15 @@ JSON:"""
 
         - Remove only HIGH-confidence duplicates
         - Prefer more complete and generalizable information
-        - Merge similar facts into one strong sentence
+        - Do NOT merge different facts — keep each distinct piece of information
 
         ---
 
-        ## COMPRESSION RULES
+        ## DETAIL RULES
 
-        - Remove redundancy and repeated context
-        - Keep only key information
-        - Use concise, information-dense sentences
+        - Preserve all specific numbers, dates, names, and figures from the input
+        - Do NOT omit supporting context or background information
+        - Expand abbreviations when helpful
 
         ---
 
@@ -532,7 +553,7 @@ Fill the provided JSON template with information extracted from the input docume
 ## RULES
 - Return ONLY valid JSON that exactly matches the template structure
 - Keep ALL keys — do not add or omit any
-- Fill each leaf (currently null) with a concise Vietnamese paragraph summarising the relevant information
+- Fill each leaf (currently null) with at least 4-8 detailed Vietnamese paragraphs covering all relevant facts, figures, context, background, and implications from the input. Separate paragraphs with \n\n. EXCEPTION: if the leaf key contains summary/conclusion/finalize/final/evaluation/đánh giá/kết luận/tổng kết/tổng hợp/kiến nghị, use only 2-3 paragraphs
 - If no information is available for a key → keep its value as null
 - Do NOT wrap the output in markdown code fences
 - Do NOT explain

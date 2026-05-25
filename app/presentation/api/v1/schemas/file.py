@@ -105,6 +105,26 @@ class FileListAllSchema(BaseModel):
         ),
     )
 
+    ids: Optional[List[int]] = Field(
+        default=None,
+        examples=[None, [1, 2, 3]],
+        description=(
+            "Filter to specific file IDs. When provided, only files whose `id` "
+            "is in this list are returned. Empty list returns nothing. Combines "
+            "with all other filters (RBAC, type, topic_id, store_id, etc.)."
+        ),
+    )
+
+    departments: Optional[List[str]] = Field(
+        default=None,
+        examples=[None, ["IT", "Kế toán"]],
+        description=(
+            "Filter by `responsible_departments` (case-insensitive). Matches "
+            "files whose array contains AT LEAST ONE element equal to any of "
+            "the provided values (OR semantics). Empty list returns no rows."
+        ),
+    )
+
     started_node: Optional[int] = Field(
         default=None,
         examples=[None, 4],

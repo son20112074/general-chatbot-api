@@ -24,11 +24,13 @@ FROM python:3.12.10-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_ROOT_USER_ACTION=ignore \
-    PATH="/opt/venv/bin:$PATH"
+    PATH="/opt/venv/bin:$PATH" \
+    TZ=Asia/Ho_Chi_Minh
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libpq5 \
+        tzdata \
         curl \
         libmagic1 \
         poppler-utils \

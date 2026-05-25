@@ -64,12 +64,6 @@ def _is_template_active(template: ReportTemplate, today: date) -> bool:
 
 
 def _should_run_today(template: ReportTemplate, today: date, now_time: time) -> bool:
-    """Return True if this template should be processed in the current run.
-
-    creation_time acts as a gate: skip until the configured time has passed.
-    If the job missed the target day (e.g. server was down), it catches up on
-    the following day.
-    """
     tid = template.id
     tname = template.name
     ct = template.creation_time
@@ -80,31 +74,30 @@ def _should_run_today(template: ReportTemplate, today: date, now_time: time) -> 
         return False
 
     freq = template.frequency
-    yesterday = today - timedelta(days=1)
 
     if freq == FrequencyEnum.DAILY:
         return True
 
     if freq == FrequencyEnum.WEEKLY:
-        result = today.weekday() in {6, 0}  # Sunday (target) or Monday (catch-up)
+        result = today.weekday() == 6  # Sunday only
         if not result:
-            msg = f"[ReportExport] Template {tid} ({tname}) skipped: weekly — today weekday={today.weekday()} not in valid window"
+            msg = f"[ReportExport] Template {tid} ({tname}) skipped: weekly — today is not Sunday (weekday={today.weekday()})"
             logger.info(msg)
             print(msg)
         return result
 
     if freq == FrequencyEnum.MONTHLY:
-        result = _is_last_day_of_month(today) or _is_last_day_of_month(yesterday)
+        result = _is_last_day_of_month(today)
         if not result:
-            msg = f"[ReportExport] Template {tid} ({tname}) skipped: monthly — today={today} not in valid window"
+            msg = f"[ReportExport] Template {tid} ({tname}) skipped: monthly — today={today} is not last day of month"
             logger.info(msg)
             print(msg)
         return result
 
     if freq == FrequencyEnum.QUARTERLY:
-        result = _is_last_day_of_quarter(today) or _is_last_day_of_quarter(yesterday)
+        result = _is_last_day_of_quarter(today)
         if not result:
-            msg = f"[ReportExport] Template {tid} ({tname}) skipped: quarterly — today={today} not in valid window"
+            msg = f"[ReportExport] Template {tid} ({tname}) skipped: quarterly — today={today} is not last day of quarter"
             logger.info(msg)
             print(msg)
         return result
@@ -113,27 +106,17 @@ def _should_run_today(template: ReportTemplate, today: date, now_time: time) -> 
 
 
 def _compute_period(frequency: FrequencyEnum, today: date) -> Tuple[date, date]:
-    """Return (period_start, period_end) anchored to the logical target day.
-
-    When running on a catch-up day (day after the target), yesterday becomes
-    the anchor so the period still covers the correct cycle.
-    """
-    yesterday = today - timedelta(days=1)
-
     if frequency == FrequencyEnum.DAILY:
         return today, today
 
     if frequency == FrequencyEnum.WEEKLY:
-        ref = today if today.weekday() == 6 else yesterday
-        return ref - timedelta(days=6), ref
+        return today - timedelta(days=6), today
 
     if frequency == FrequencyEnum.MONTHLY:
-        ref = today if _is_last_day_of_month(today) else yesterday
-        return ref.replace(day=1), ref
+        return today.replace(day=1), today
 
     if frequency == FrequencyEnum.QUARTERLY:
-        ref = today if _is_last_day_of_quarter(today) else yesterday
-        return _quarter_start(ref), ref
+        return _quarter_start(today), today
 
     return today, today
 
@@ -371,6 +354,16 @@ def _save_docx(template_name: str, report_id: int, content: bytes) -> str:
 
 # ── Status helpers ────────────────────────────────────────────────────────────
 
+async def _last_report_failed(session: AsyncSession, template_id: int) -> bool:
+    result = await session.scalar(
+        select(Report.status)
+        .where(Report.template_id == template_id)
+        .order_by(Report.created_at.desc())
+        .limit(1)
+    )
+    return result == ReportStatusEnum.FAILED
+
+
 async def _set_docs_status(
     session: AsyncSession,
     report_id: int,
@@ -567,7 +560,6 @@ Extract information from INPUT TEXT into structured Markdown following the templ
 
 async def _run_select_mode_templates() -> None:
     today = date.today()
-    now_time = datetime.now().time()
 
     async with get_db_session() as session:
         result = await session.execute(
@@ -590,13 +582,6 @@ async def _run_select_mode_templates() -> None:
                 print(msg)
                 continue
 
-            ct = template.creation_time
-            if ct and now_time < ct:
-                msg = f"[ReportExport][select] Template {template.id} ({template.name}) skipped: creation_time {ct} not yet reached (now={now_time})"
-                logger.info(msg)
-                print(msg)
-                continue
-
             period_start = period_end = today
 
             existing_count = await session.scalar(
@@ -608,6 +593,12 @@ async def _run_select_mode_templates() -> None:
             if existing_count:
                 msg = f"[ReportExport][select] Template {template.id} ({template.name}) report for {period_start} already exists, skipping"
                 logger.info(msg)
+                print(msg)
+                continue
+
+            if await _last_report_failed(session, template.id):
+                msg = f"[ReportExport][select] Template {template.id} ({template.name}) last report failed — skipping until resolved"
+                logger.warning(msg)
                 print(msg)
                 continue
 
@@ -685,6 +676,12 @@ async def _run_for_frequency(frequency: FrequencyEnum) -> None:
             if existing_count:
                 msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) report for {period_start}→{period_end} already exists, skipping"
                 logger.info(msg)
+                print(msg)
+                continue
+
+            if await _last_report_failed(session, template.id):
+                msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) last report failed — skipping until resolved"
+                logger.warning(msg)
                 print(msg)
                 continue
 
@@ -798,7 +795,6 @@ async def report_export_daily_job() -> None:
         logger.info(msg)
         print(msg)
         await _run_for_frequency(FrequencyEnum.DAILY)
-        await _run_select_mode_templates()
         msg = "[ReportExport] Daily job finished"
         logger.info(msg)
         print(msg)

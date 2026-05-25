@@ -8,9 +8,10 @@ from app.crons.report_export_job import (
     report_export_weekly_job,
     report_export_monthly_job,
     report_export_quarterly_job,
+    test_report_export_weekly
 )
 from app.core.logger import get_logger
-
+# from datetime import datetime, timedelta
 logger = get_logger()
 
 
@@ -53,8 +54,13 @@ def register_jobs(scheduler: AsyncIOScheduler):
     scheduler.add_job(
         report_export_daily_job,
         trigger="cron",
+<<<<<<< HEAD
         hour=0,
         minute=3,
+=======
+       hour=3,
+        minute=59,
+>>>>>>> refs/remotes/origin/develop
         id="report_export_daily",
         name="Report Export (Daily)",
         replace_existing=True,

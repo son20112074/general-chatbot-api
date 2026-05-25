@@ -78,7 +78,7 @@ class OpenRouterClient:
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.1,
-            "max_tokens": 2000,  # ✅ increase to avoid truncation
+            "max_tokens": 8192,
             # "provider": {
             #     "allow_fallbacks": True,
             #     "order": ["fireworks", "deepinfra"]
@@ -142,8 +142,9 @@ class OpenRouterClient:
         # HANDLE TRUNCATION
         # -------------------------
         if finish_reason == "length":
-            print("⚠️ Truncated output")
-            return AIMessage(content="⚠️ Kết quả bị cắt, vui lòng thử lại.")
+            print("⚠️ Truncated output — returning partial content")
+            if content:
+                return AIMessage(content=content)
 
         # -------------------------
         # NORMAL TEXT RESPONSE
