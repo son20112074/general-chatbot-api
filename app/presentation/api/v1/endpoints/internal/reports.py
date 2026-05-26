@@ -9,7 +9,7 @@ from app.core.database import get_db, get_db_session
 from app.crons.report_export_job import _process_template, _running_templates
 from app.domain.models.file import File as FileModel
 from app.domain.models.report import Report, ReportStatusEnum
-from app.domain.models.report_template import ReportTemplate
+from app.domain.models.report_template import FileModeEnum, ReportTemplate
 from app.infrastructure.services.report_service import ReportService
 from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.report import (
@@ -194,7 +194,7 @@ async def run_report_once(
     if not template:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
     _assert_template_owner(template, current_user.user_id)
-    if template.file_mode != "select":
+    if template.file_mode != FileModeEnum.SELECT:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run once is only supported for select-mode templates")
 
     background_tasks.add_task(_run_report_once_bg, template_id)
