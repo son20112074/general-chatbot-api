@@ -8,6 +8,7 @@ from app.crons.report_export_job import (
     report_export_weekly_job,
     report_export_monthly_job,
     report_export_quarterly_job,
+    report_export_select_job,
     test_report_export_weekly
 )
 from app.core.logger import get_logger
@@ -89,6 +90,17 @@ def register_jobs(scheduler: AsyncIOScheduler):
         id="report_export_quarterly",
         name="Report Export (Quarterly)",
         replace_existing=True,
+    )
+
+    scheduler.add_job(
+        report_export_select_job,
+        trigger="cron",
+        hour=22,
+        minute=0,
+        id="report_export_select",
+        name="Report Export (Select)",
+        replace_existing=True,
+        max_instances=1,
     )
 
     # # One-shot test: run weekly extraction with last-3-months files, 5 s after startup
