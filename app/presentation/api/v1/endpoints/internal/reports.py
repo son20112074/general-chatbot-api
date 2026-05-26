@@ -2,12 +2,13 @@ from datetime import date
 from typing import Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db, get_db_session
-from app.crons.report_export_job import _process_template
+from app.crons.report_export_job import _process_template, _running_templates
 from app.domain.models.file import File as FileModel
+from app.domain.models.report import Report, ReportStatusEnum
 from app.domain.models.report_template import ReportTemplate
 from app.infrastructure.services.report_service import ReportService
 from app.presentation.api.dependencies import get_current_user
@@ -75,7 +76,6 @@ async def list_templates(
 @router.post("/templates", response_model=ReportTemplateResponse, status_code=status.HTTP_201_CREATED)
 async def create_template(
     data: ReportTemplateCreate,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -84,8 +84,6 @@ async def create_template(
         template = await service.create_template(data, current_user.user_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    if data.file_mode == "select" and template.file_ids:
-        background_tasks.add_task(_run_report_once_bg, template.id)
     return ReportTemplateResponse.model_validate(template)
 
 
@@ -139,6 +137,9 @@ async def delete_template(
 # ── Reports ───────────────────────────────────────────────────────────────────
 
 async def _run_report_once_bg(template_id: int) -> None:
+    if template_id in _running_templates:
+        return
+
     today = date.today()
     async with get_db_session() as session:
         tpl_result = await session.execute(
@@ -147,6 +148,20 @@ async def _run_report_once_bg(template_id: int) -> None:
         template = tpl_result.scalar_one_or_none()
         if not template or not template.file_ids:
             return
+
+        existing = await session.scalar(
+            select(func.count()).select_from(Report)
+            .where(Report.template_id == template_id)
+            .where(Report.period_start == today)
+            .where(Report.period_end == today)
+            .where(Report.status.in_([ReportStatusEnum.COMPLETED, ReportStatusEnum.FAILED]))
+        )
+        if existing:
+            return
+
+        if template_id in _running_templates:
+            return
+        _running_templates.add(template_id)
 
         files_result = await session.execute(
             select(FileModel).where(
@@ -158,9 +173,13 @@ async def _run_report_once_bg(template_id: int) -> None:
         )
         files = list(files_result.scalars().all())
         if not files:
+            _running_templates.discard(template_id)
             return
 
-        await _process_template(session, template, files, today, today)
+        try:
+            await _process_template(session, template, files, today, today)
+        finally:
+            _running_templates.discard(template_id)
 
 
 @router.post("/templates/{template_id}/run", status_code=status.HTTP_202_ACCEPTED, tags=["Reports"])
