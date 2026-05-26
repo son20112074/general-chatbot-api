@@ -33,6 +33,9 @@ from app.infrastructure.services.template_extraction_multi_files_service import 
 
 logger = get_logger()
 
+# Tracks template IDs currently being processed (in-process collision guard)
+_running_templates: set[int] = set()
+
 ADMIN_ROLE_ID = settings.ADMIN_ROLE_ID
 REPORTS_OUTPUT_DIR = Path("static/downloads/reports")
 REPORTS_STORAGE_PREFIX = "downloads/reports"
@@ -352,17 +355,6 @@ def _save_docx(template_name: str, report_id: int, content: bytes) -> str:
     return f"static/{REPORTS_STORAGE_PREFIX}/{filename}"
 
 
-# ── Status helpers ────────────────────────────────────────────────────────────
-
-async def _last_report_failed(session: AsyncSession, template_id: int) -> bool:
-    result = await session.scalar(
-        select(Report.status)
-        .where(Report.template_id == template_id)
-        .order_by(Report.created_at.desc())
-        .limit(1)
-    )
-    return result == ReportStatusEnum.FAILED
-
 
 async def _set_docs_status(
     session: AsyncSession,
@@ -589,16 +581,11 @@ async def _run_select_mode_templates() -> None:
                 .where(Report.template_id == template.id)
                 .where(Report.period_start == period_start)
                 .where(Report.period_end == period_end)
+                .where(Report.status.in_([ReportStatusEnum.COMPLETED, ReportStatusEnum.FAILED]))
             )
             if existing_count:
-                msg = f"[ReportExport][select] Template {template.id} ({template.name}) report for {period_start} already exists, skipping"
+                msg = f"[ReportExport][select] Template {template.id} ({template.name}) already ran for {period_start}, skipping"
                 logger.info(msg)
-                print(msg)
-                continue
-
-            if await _last_report_failed(session, template.id):
-                msg = f"[ReportExport][select] Template {template.id} ({template.name}) last report failed — skipping until resolved"
-                logger.warning(msg)
                 print(msg)
                 continue
 
@@ -630,10 +617,20 @@ async def _run_select_mode_templates() -> None:
                 print(msg)
                 continue
 
+            if template.id in _running_templates:
+                msg = f"[ReportExport][select] Template {template.id} ({template.name}) already running (/run in progress), skipping"
+                logger.info(msg)
+                print(msg)
+                continue
+
             msg = f"[ReportExport][select] Template {template.id} ({template.name}) | user_id={user_row.id} | {len(files)} file(s)"
             logger.info(msg)
             print(msg)
-            await _process_template(session, template, files, period_start, period_end)
+            _running_templates.add(template.id)
+            try:
+                await _process_template(session, template, files, period_start, period_end)
+            finally:
+                _running_templates.discard(template.id)
 
 
 async def _run_for_frequency(frequency: FrequencyEnum) -> None:
@@ -666,22 +663,16 @@ async def _run_for_frequency(frequency: FrequencyEnum) -> None:
                 continue
             period_start, period_end = _compute_period(frequency, today)
 
-            # Idempotency: skip if a report for this period already exists
             existing_count = await session.scalar(
                 select(func.count()).select_from(Report)
                 .where(Report.template_id == template.id)
                 .where(Report.period_start == period_start)
                 .where(Report.period_end == period_end)
+                .where(Report.status.in_([ReportStatusEnum.COMPLETED, ReportStatusEnum.FAILED]))
             )
             if existing_count:
-                msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) report for {period_start}→{period_end} already exists, skipping"
+                msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) already ran for {period_start}→{period_end}, skipping"
                 logger.info(msg)
-                print(msg)
-                continue
-
-            if await _last_report_failed(session, template.id):
-                msg = f"[ReportExport][{frequency.value}] Template {template.id} ({template.name}) last report failed — skipping until resolved"
-                logger.warning(msg)
                 print(msg)
                 continue
 
@@ -795,7 +786,6 @@ async def report_export_daily_job() -> None:
         logger.info(msg)
         print(msg)
         await _run_for_frequency(FrequencyEnum.DAILY)
-        await _run_select_mode_templates()
         msg = "[ReportExport] Daily job finished"
         logger.info(msg)
         print(msg)
@@ -846,6 +836,21 @@ async def report_export_quarterly_job() -> None:
         print(msg)
     except Exception:
         msg = "[ReportExport] Quarterly job failed"
+        logger.exception(msg)
+        print(msg)
+
+
+async def report_export_select_job() -> None:
+    try:
+        msg = "[ReportExport] Select job started"
+        logger.info(msg)
+        print(msg)
+        await _run_select_mode_templates()
+        msg = "[ReportExport] Select job finished"
+        logger.info(msg)
+        print(msg)
+    except Exception:
+        msg = "[ReportExport] Select job failed"
         logger.exception(msg)
         print(msg)
 
