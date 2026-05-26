@@ -57,4 +57,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -fsS http://localhost:8000/health || exit 1
 
-CMD ["uvicorn", "server_dev:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# Single worker: Paddle layout (PP-DocLayoutV3) in-process is memory-heavy; multi-worker risks OOM/worker crash.
+CMD ["uvicorn", "server_dev:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

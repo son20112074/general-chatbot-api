@@ -3,7 +3,7 @@ Image Parser Module
 
 This module contains the ImageParser class for parsing image files.
 - Uses PaddleOCR-VL via vLLM server for VLM; layout model (PP-DocLayoutV3) still loads locally once.
-- Optional env PADDLEOCR_VL_SERVER_URL; default: https://6780-118-70-233-92.ngrok-free.app/v1
+- Optional env PADDLEOCR_VL_SERVER_URL; default in Docker: http://paddleocr-vllm:8080
 - Install: pip install "paddleocr[doc-parser]"
 """
 
@@ -13,7 +13,7 @@ import warnings
 from pathlib import Path
 from typing import Dict, Any, Union, Optional, List
 
-DEFAULT_VL_SERVER_URL = "https://6780-118-70-233-92.ngrok-free.app"
+DEFAULT_VL_SERVER_URL = "http://paddleocr-vllm:8080"
 
 
 def _get_vl_server_url() -> str:

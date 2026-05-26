@@ -18,6 +18,20 @@ class ExtractFileContentResponse(BaseModel):
     success: bool = Field(default=True, description="Trạng thái thành công")
     message: str = Field(default="Trích xuất nội dung file thành công", description="Thông báo")
 
+
+class ExtractFileContentJobStartResponse(BaseModel):
+    job_id: str = Field(..., description="ID job trích xuất bất đồng bộ")
+    status: str = Field(default="processing", description="Trạng thái job")
+
+
+class ExtractFileContentJobStatusResponse(BaseModel):
+    job_id: str = Field(..., description="ID job")
+    status: str = Field(..., description="processing | completed | failed")
+    result: Optional[ExtractFileContentResponse] = Field(
+        None, description="Kết quả khi status=completed"
+    )
+    error: Optional[str] = Field(None, description="Lỗi khi status=failed")
+
 # Dashboard response schema
 class FileDashboardResponse(BaseModel):
     total_files: int = Field(..., description="Tổng số lượng file")
