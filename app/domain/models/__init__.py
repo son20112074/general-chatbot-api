@@ -17,6 +17,7 @@ from .shared_store import *
 from .report_document import *
 from .report_template import *
 from .report import *
+from .system_setting import *
 
 __all__ = [
     "User",
@@ -37,6 +38,7 @@ __all__ = [
     "SharedStore",
     "ReportDocument",
     "ReportTemplate",
-    "Report"
+    "Report",
+    "SystemSetting",
 
 ]

@@ -21,6 +21,7 @@ from app.presentation.api.v1.endpoints.internal import store_files
 from app.presentation.api.v1.endpoints.internal import shared_store
 from app.presentation.api.v1.endpoints.internal import template_extraction
 from app.presentation.api.v1.endpoints.internal import reports
+from app.presentation.api.v1.endpoints.internal import system_settings
 
 router = APIRouter()
 
@@ -50,3 +51,4 @@ router.include_router(store_files.router, prefix="/api/v1/store-files", tags=["S
 router.include_router(shared_store.router, prefix="/api/v1/shared-store", tags=["Shared Store"])
 router.include_router(template_extraction.router, prefix="/api/v1/template-extraction", tags=["Template Extraction"])
 router.include_router(reports.router, prefix="/api/v1/reports", tags=["Reports"])
+router.include_router(system_settings.router, prefix="/api/v1/system-settings", tags=["System Settings"])
