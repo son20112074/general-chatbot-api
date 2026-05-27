@@ -88,6 +88,10 @@ class ReportDocumentItem(BaseModel):
         from_attributes = True
 
 
+class MarkdownReportCreate(BaseModel):
+    markdown: str = Field(..., max_length=100_000)
+
+
 class ReportResponse(BaseModel):
     id: int
     name: str
