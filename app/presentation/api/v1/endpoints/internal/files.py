@@ -12,15 +12,19 @@ from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.auth import TokenData
 from app.presentation.api.v1.schemas.file import (
     ExtractFileContentRequest, ExtractFileContentResponse,
+    ExtractFileContentJobStartResponse, ExtractFileContentJobStatusResponse,
     FileDashboardResponse, PeriodStatsRequest, PeriodStatsResponse,
     CountryTechStatsRequest, CountryTechStatsResponse,
     FileUpdateSchema, FileMoveSchema, FileListAllSchema,
 )
+from app.infrastructure.extract_file_job_store import extract_file_jobs
 from app.utils.table_lookup import get_table_with_schema
 from app.utils.helpers import check_file_permission, compute_and_set_node_path, build_file_item, parse_datetime_safe
 from typing import List, Optional
 from datetime import datetime
 
+import asyncio
+import logging
 import os
 from pathlib import Path
 import docx
@@ -30,6 +34,8 @@ import codecs
 from parser.pdf_parser import PDFParser
 
 ADMIN_ROLE_ID = settings.ADMIN_ROLE_ID
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -316,82 +322,149 @@ def extract_pdf_content(file_path: str) -> str:
         parser = PDFParser()
         result = parser.parse_pdf(file_path)
         if not result.get("success"):
-            raise Exception(result.get("error", "Không thể trích xuất nội dung từ file PDF"))
+            err = result.get("error", "Không thể trích xuất nội dung từ file PDF")
+            if "vượt" in err.lower() or "giới hạn" in err.lower():
+                raise ValueError(err)
+            raise Exception(err)
         return result.get("content", "")
+    except ValueError:
+        raise
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file PDF: {str(e)}")
+
+async def _perform_extract_file_content(
+    file_path: str,
+    current_user: TokenData,
+) -> dict:
+    """Trích xuất nội dung file (dùng chung cho sync và async job)."""
+    local_path = _resolve_static_file_path(file_path)
+    local_file_path = str(local_path)
+    file_extension = os.path.splitext(str(local_path))[1].lower()
+    supported_extensions = [".doc", ".docx", ".xlsx", ".txt", ".csv", ".dat", ".pdf"]
+
+    if file_extension not in supported_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Định dạng file {file_extension} không được hỗ trợ. "
+                f"Chỉ hỗ trợ: {', '.join(supported_extensions)}"
+            ),
+        )
+
+    st = os.stat(local_path)
+    file_size = st.st_size
+    modified_time = datetime.fromtimestamp(st.st_mtime).isoformat()
+
+    logger.info(
+        "extract-file-content: path=%s ext=%s size=%d bytes user_id=%s",
+        file_path,
+        file_extension,
+        file_size,
+        getattr(current_user, "user_id", None),
+    )
+
+    content = ""
+    if file_extension == ".docx":
+        content = extract_docx_content(local_file_path)
+    elif file_extension == ".doc":
+        content = extract_doc_content(local_file_path)
+    elif file_extension == ".xlsx":
+        content = extract_xlsx_content(local_file_path)
+    elif file_extension in [".txt", ".dat"]:
+        content = extract_text_content(local_file_path)
+    elif file_extension == ".csv":
+        content = extract_csv_content(local_file_path)
+    elif file_extension == ".pdf":
+        content = await asyncio.to_thread(extract_pdf_content, local_file_path)
+
+    static_root = Path("static").resolve()
+    rel_for_url = os.path.relpath(local_path, static_root).replace(os.sep, "/")
+    file_url = f"/api/v1/static/{rel_for_url}"
+
+    return {
+        "file_path": file_path,
+        "file_url": file_url,
+        "file_name": os.path.basename(str(local_path)),
+        "file_size": file_size,
+        "file_extension": file_extension,
+        "modified_time": modified_time,
+        "content": content,
+        "content_length": len(content),
+    }
+
+
+async def _run_extract_file_job(
+    job_id: str,
+    request: ExtractFileContentRequest,
+    current_user: TokenData,
+) -> None:
+    try:
+        result = await _perform_extract_file_content(request.file_path, current_user)
+        await extract_file_jobs.complete(job_id, result)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        await extract_file_jobs.fail(job_id, detail)
+    except ValueError as exc:
+        await extract_file_jobs.fail(job_id, str(exc))
+    except Exception as exc:
+        logger.exception("extract-file-content job failed: %s", request.file_path)
+        await extract_file_jobs.fail(job_id, f"Lỗi khi trích xuất nội dung file: {exc}")
+
 
 @router.post("/extract-file-content", response_model=ExtractFileContentResponse)
 async def extract_file_content(
     request: ExtractFileContentRequest,
-    current_user: TokenData = Depends(get_current_user)
+    current_user: TokenData = Depends(get_current_user),
 ):
     """
     API để trích xuất nội dung từ file trong thư mục static (vd: static/uploads/...).
     Hỗ trợ các định dạng: doc, docx, xlsx, txt, csv, dat, pdf
     """
     try:
-        file_path = request.file_path
-
-        local_path = _resolve_static_file_path(file_path)
-        local_file_path = str(local_path)
-
-        # Lấy phần mở rộng của file
-        file_extension = os.path.splitext(str(local_path))[1].lower()
-        
-        # Danh sách các phần mở rộng được hỗ trợ
-        supported_extensions = ['.doc', '.docx', '.xlsx', '.txt', '.csv', '.dat', '.pdf']
-        
-        if file_extension not in supported_extensions:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Định dạng file {file_extension} không được hỗ trợ. Chỉ hỗ trợ: {', '.join(supported_extensions)}"
-            )
-
-        st = os.stat(local_path)
-        file_size = st.st_size
-        modified_time = datetime.fromtimestamp(st.st_mtime).isoformat()
-
-        content = ""
-        
-        # Trích xuất nội dung dựa trên định dạng file
-        if file_extension == '.docx':
-            content = extract_docx_content(local_file_path)
-        elif file_extension == '.doc':
-            content = extract_doc_content(local_file_path)
-        elif file_extension == '.xlsx':
-            content = extract_xlsx_content(local_file_path)
-        elif file_extension in ['.txt', '.dat']:
-            content = extract_text_content(local_file_path)
-        elif file_extension == '.csv':
-            content = extract_csv_content(local_file_path)
-        elif file_extension == '.pdf':
-            content = extract_pdf_content(local_file_path)
-
-        static_root = Path("static").resolve()
-        rel_for_url = os.path.relpath(local_path, static_root).replace(os.sep, "/")
-        file_url = f"/api/v1/static/{rel_for_url}"
-
-        file_info = {
-            "file_path": file_path,
-            "file_url": file_url,
-            "file_name": os.path.basename(str(local_path)),
-            "file_size": file_size,
-            "file_extension": file_extension,
-            "modified_time": modified_time,
-            "content": content,
-            "content_length": len(content)
-        }
-        
-        return file_info
-        
+        return await _perform_extract_file_content(request.file_path, current_user)
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
+        logger.exception("extract-file-content failed: %s", request.file_path)
         raise HTTPException(
             status_code=500,
-            detail=f"Lỗi khi trích xuất nội dung file: {str(e)}"
+            detail=f"Lỗi khi trích xuất nội dung file: {str(e)}",
         )
+
+
+@router.post(
+    "/extract-file-content/async",
+    response_model=ExtractFileContentJobStartResponse,
+)
+async def start_extract_file_content(
+    request: ExtractFileContentRequest,
+    current_user: TokenData = Depends(get_current_user),
+):
+    """Bắt đầu trích xuất bất đồng bộ; client poll GET .../jobs/{job_id}."""
+    job_id = await extract_file_jobs.create()
+    asyncio.create_task(_run_extract_file_job(job_id, request, current_user))
+    return ExtractFileContentJobStartResponse(job_id=job_id, status="processing")
+
+
+@router.get(
+    "/extract-file-content/jobs/{job_id}",
+    response_model=ExtractFileContentJobStatusResponse,
+)
+async def get_extract_file_content_job(
+    job_id: str,
+    current_user: TokenData = Depends(get_current_user),
+):
+    job = await extract_file_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job không tồn tại hoặc đã hết hạn")
+    return ExtractFileContentJobStatusResponse(
+        job_id=job["job_id"],
+        status=job["status"],
+        result=job.get("result"),
+        error=job.get("error"),
+    )
 
 @router.get("/dashboard", response_model=FileDashboardResponse)
 async def get_file_dashboard(

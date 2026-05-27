@@ -1,17 +1,24 @@
-from datetime import date
+import os
+import re
+import tempfile
+from datetime import date, datetime
 from typing import Dict, Optional
 
+from docx import Document as DocxDocument
+from docx.shared import Pt
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db, get_db_session
-from app.crons.report_export_job import _process_template
+from app.crons.report_export_job import _process_template, _running_templates
 from app.domain.models.file import File as FileModel
-from app.domain.models.report_template import ReportTemplate
+from app.domain.models.report import Report, ReportStatusEnum
+from app.domain.models.report_template import FileModeEnum, ReportTemplate
 from app.infrastructure.services.report_service import ReportService
 from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.report import (
+    MarkdownReportCreate,
     ReportDocumentItem,
     ReportResponse,
     ReportTemplateCreate,
@@ -52,6 +59,138 @@ def _assert_report_owner(report, user_id: int) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to access this report")
 
 
+# ── Markdown → DOCX helpers ───────────────────────────────────────────────────
+
+_INLINE_MD = re.compile(
+    r"\*\*\*(.+?)\*\*\*"
+    r"|___(.+?)___"
+    r"|\*\*(.+?)\*\*"
+    r"|__(.+?)__"
+    r"|\*(.+?)\*"
+    r"|_(.+?)_"
+    r"|`(.+?)`",
+    re.DOTALL,
+)
+
+
+def _strip_md_inline(text: str) -> str:
+    return _INLINE_MD.sub(lambda m: next(g for g in m.groups() if g is not None), text)
+
+
+def _apply_inline_md(para, text: str) -> None:
+    last = 0
+    for m in _INLINE_MD.finditer(text):
+        if m.start() > last:
+            para.add_run(text[last : m.start()])
+        g = m.groups()
+        if g[0] or g[1]:
+            run = para.add_run(g[0] or g[1])
+            run.bold = True
+            run.italic = True
+        elif g[2] or g[3]:
+            run = para.add_run(g[2] or g[3])
+            run.bold = True
+        elif g[4] or g[5]:
+            run = para.add_run(g[4] or g[5])
+            run.italic = True
+        elif g[6]:
+            run = para.add_run(g[6])
+            run.font.name = "Courier New"
+            run.font.size = Pt(10)
+        last = m.end()
+    if last < len(text):
+        para.add_run(text[last:])
+
+
+def _build_docx_from_markdown(title: str, markdown_text: str) -> bytes:
+    doc = DocxDocument()
+    doc.add_heading(title, level=0)
+    doc.add_paragraph(f"Created: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    doc.add_paragraph("")
+
+    lines = markdown_text.splitlines()
+    i = 0
+    in_code = False
+    code_buf: list = []
+
+    while i < len(lines):
+        line = lines[i]
+
+        if line.strip().startswith("```"):
+            if in_code:
+                para = doc.add_paragraph("\n".join(code_buf))
+                for run in para.runs:
+                    run.font.name = "Courier New"
+                    run.font.size = Pt(10)
+                in_code = False
+                code_buf = []
+            else:
+                in_code = True
+            i += 1
+            continue
+
+        if in_code:
+            code_buf.append(line)
+            i += 1
+            continue
+
+        m = re.match(r"^(#{1,6})\s+(.*)", line)
+        if m:
+            doc.add_heading(_strip_md_inline(m.group(2)), level=min(len(m.group(1)), 4))
+            i += 1
+            continue
+
+        if re.match(r"^(-{3,}|\*{3,}|_{3,})\s*$", line):
+            doc.add_paragraph("")
+            i += 1
+            continue
+
+        m = re.match(r"^\s*[-*+]\s+(.*)", line)
+        if m:
+            _apply_inline_md(doc.add_paragraph(style="List Bullet"), m.group(1))
+            i += 1
+            continue
+
+        m = re.match(r"^\s*\d+\.\s+(.*)", line)
+        if m:
+            _apply_inline_md(doc.add_paragraph(style="List Number"), m.group(1))
+            i += 1
+            continue
+
+        m = re.match(r"^>\s?(.*)", line)
+        if m:
+            run = doc.add_paragraph().add_run(m.group(1))
+            run.italic = True
+            i += 1
+            continue
+
+        if not line.strip():
+            i += 1
+            continue
+
+        _apply_inline_md(doc.add_paragraph(), line)
+        i += 1
+
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        doc.save(tmp_path)
+        with open(tmp_path, "rb") as f:
+            data = f.read()
+    finally:
+        os.unlink(tmp_path)
+    return data
+
+
+def _save_markdown_docx(content: bytes) -> str:
+    from pathlib import Path
+    out_dir = Path("static/downloads/reports")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"report_md_{datetime.now().strftime('%Y%m%d_%H%M%S%f')}.docx"
+    (out_dir / filename).write_bytes(content)
+    return f"static/downloads/reports/{filename}"
+
+
 # ── Report Templates ──────────────────────────────────────────────────────────
 
 @router.get("/templates", response_model=Dict)
@@ -75,7 +214,6 @@ async def list_templates(
 @router.post("/templates", response_model=ReportTemplateResponse, status_code=status.HTTP_201_CREATED)
 async def create_template(
     data: ReportTemplateCreate,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -84,8 +222,6 @@ async def create_template(
         template = await service.create_template(data, current_user.user_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    if data.file_mode == "select" and template.file_ids:
-        background_tasks.add_task(_run_report_once_bg, template.id)
     return ReportTemplateResponse.model_validate(template)
 
 
@@ -139,6 +275,9 @@ async def delete_template(
 # ── Reports ───────────────────────────────────────────────────────────────────
 
 async def _run_report_once_bg(template_id: int) -> None:
+    if template_id in _running_templates:
+        return
+
     today = date.today()
     async with get_db_session() as session:
         tpl_result = await session.execute(
@@ -147,6 +286,20 @@ async def _run_report_once_bg(template_id: int) -> None:
         template = tpl_result.scalar_one_or_none()
         if not template or not template.file_ids:
             return
+
+        existing = await session.scalar(
+            select(func.count()).select_from(Report)
+            .where(Report.template_id == template_id)
+            .where(Report.period_start == today)
+            .where(Report.period_end == today)
+            .where(Report.status.in_([ReportStatusEnum.COMPLETED, ReportStatusEnum.FAILED]))
+        )
+        if existing:
+            return
+
+        if template_id in _running_templates:
+            return
+        _running_templates.add(template_id)
 
         files_result = await session.execute(
             select(FileModel).where(
@@ -158,9 +311,13 @@ async def _run_report_once_bg(template_id: int) -> None:
         )
         files = list(files_result.scalars().all())
         if not files:
+            _running_templates.discard(template_id)
             return
 
-        await _process_template(session, template, files, today, today)
+        try:
+            await _process_template(session, template, files, today, today)
+        finally:
+            _running_templates.discard(template_id)
 
 
 @router.post("/templates/{template_id}/run", status_code=status.HTTP_202_ACCEPTED, tags=["Reports"])
@@ -175,11 +332,21 @@ async def run_report_once(
     if not template:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
     _assert_template_owner(template, current_user.user_id)
-    if template.file_mode != "select":
+    if template.file_mode != FileModeEnum.SELECT:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run once is only supported for select-mode templates")
 
     background_tasks.add_task(_run_report_once_bg, template_id)
     return {"message": "Report generation started"}
+
+
+@router.post("/from-markdown", response_model=Dict, status_code=status.HTTP_200_OK, tags=["Reports"])
+async def create_docx_from_markdown(
+    data: MarkdownReportCreate,
+    _: None = Depends(get_current_user),
+):
+    docx_bytes = _build_docx_from_markdown("Report", data.markdown)
+    file_url = _save_markdown_docx(docx_bytes)
+    return {"file_url": file_url}
 
 
 @router.get("", response_model=Dict, tags=["Reports"])

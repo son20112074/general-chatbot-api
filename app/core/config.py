@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # PaddleOCR-VL: optional vLLM server URL (e.g. ngrok). If set, image parser uses this instead of local model.
     PADDLEOCR_VL_SERVER_URL: Optional[str] = None
 
+    # PDF OCR limits (image-based / scanned PDFs use Paddle in-process + vLLM)
+    MAX_PDF_SIZE_MB: int = 100
+    MAX_PDF_PAGES_FOR_OCR: int = 200
+
     # Admin role
     ADMIN_ROLE_ID: int = 1
 

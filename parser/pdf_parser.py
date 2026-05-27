@@ -7,8 +7,9 @@ This module contains the PDFParser class for parsing PDF documents.
 """
 
 import logging
+import os
 from pathlib import Path
-from typing import Dict, Any, Union
+from typing import Dict, Any, Union, Tuple
 
 try:
     import fitz  # PyMuPDF
@@ -16,6 +17,63 @@ except ImportError:
     fitz = None
 
 logger = logging.getLogger(__name__)
+
+
+def _get_pdf_ocr_limits() -> Tuple[int, int]:
+    """Return (max_size_mb, max_pages) for image-based PDF OCR."""
+    max_mb = 50
+    max_pages = 20
+    try:
+        from app.core.config import settings
+        max_mb = int(getattr(settings, "MAX_PDF_SIZE_MB", max_mb))
+        max_pages = int(getattr(settings, "MAX_PDF_PAGES_FOR_OCR", max_pages))
+    except Exception:
+        pass
+    env_mb = os.environ.get("MAX_PDF_SIZE_MB", "").strip()
+    env_pages = os.environ.get("MAX_PDF_PAGES_FOR_OCR", "").strip()
+    if env_mb.isdigit():
+        max_mb = int(env_mb)
+    if env_pages.isdigit():
+        max_pages = int(env_pages)
+    return max_mb, max_pages
+
+
+def _count_pdf_pages(file_path: Path) -> int:
+    if fitz is not None:
+        try:
+            doc = fitz.open(str(file_path))
+            try:
+                return len(doc)
+            finally:
+                doc.close()
+        except Exception as e:
+            logger.warning("PyMuPDF page count failed: %s", e)
+    from pypdf import PdfReader
+    return len(PdfReader(str(file_path)).pages)
+
+
+def _validate_pdf_for_ocr(file_path: Path) -> None:
+    """Raise ValueError if scanned PDF exceeds size or page limits."""
+    max_mb, max_pages = _get_pdf_ocr_limits()
+    size_bytes = file_path.stat().st_size
+    max_bytes = max_mb * 1024 * 1024
+    if size_bytes > max_bytes:
+        raise ValueError(
+            f"PDF vượt quá {max_mb} MB (kích thước {size_bytes / (1024 * 1024):.1f} MB). "
+            "Giảm kích thước file hoặc tách thành nhiều phần nhỏ hơn."
+        )
+    page_count = _count_pdf_pages(file_path)
+    if page_count > max_pages:
+        raise ValueError(
+            f"PDF có {page_count} trang, vượt giới hạn OCR {max_pages} trang. "
+            "Tách file hoặc tăng MAX_PDF_PAGES_FOR_OCR."
+        )
+    logger.info(
+        "PDF OCR validation OK: %s (%d pages, %.1f MB)",
+        file_path,
+        page_count,
+        size_bytes / (1024 * 1024),
+    )
 
 
 def _get_paddle_pipeline():
@@ -113,6 +171,8 @@ class PDFParser:
         Extract text from image-based PDF using PaddleOCR-VL vLLM server (same as image_parser).
         PaddleOCRVL.predict() accepts PDF path and returns per-page results.
         """
+        file_path = Path(file_path)
+        _validate_pdf_for_ocr(file_path)
         pipeline, collect_text = _get_paddle_pipeline()
         output = pipeline.predict(str(file_path))
         for res in output:
