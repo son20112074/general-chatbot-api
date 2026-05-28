@@ -79,6 +79,14 @@ class CountryTechStatsResponse(BaseModel):
     total_technologies: int = Field(..., description="Tổng số công nghệ unique")
 
 # File management schemas
+class DistinctResponsibleDepartmentsResponse(BaseModel):
+    departments: List[str] = Field(
+        ...,
+        description="Danh sách tên phòng ban distinct từ `files.responsible_departments` (theo quyền xem file).",
+    )
+    total: int = Field(..., description="Số lượng phòng ban trong danh sách")
+
+
 class FileUpdateSchema(BaseModel):
     name: Optional[str] = Field(default=None, examples=[None], description="File name")
 

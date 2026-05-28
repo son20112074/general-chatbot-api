@@ -16,6 +16,7 @@ from app.presentation.api.v1.schemas.file import (
     FileDashboardResponse, PeriodStatsRequest, PeriodStatsResponse,
     CountryTechStatsRequest, CountryTechStatsResponse,
     FileUpdateSchema, FileMoveSchema, FileListAllSchema,
+    DistinctResponsibleDepartmentsResponse,
 )
 from app.infrastructure.extract_file_job_store import extract_file_jobs
 from app.infrastructure.services.milvus_cleanup_service import delete_chunks_by_path_async
@@ -1034,6 +1035,37 @@ async def move_file(
     await session.commit()
     await session.refresh(file_obj)
     return file_obj.to_dict()
+
+@router.get(
+    "/responsible-departments",
+    response_model=DistinctResponsibleDepartmentsResponse,
+    summary="List distinct responsible departments",
+    description="""Returns distinct department names from `files.responsible_departments`
+for files the current user is allowed to see (same RBAC rules as `list-all`).
+
+Names are deduplicated case-insensitively while preserving one display form from the database.
+Sorted alphabetically (case-insensitive).""",
+)
+async def list_distinct_responsible_departments(
+    current_user: TokenData = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    service = FileQueryService(db)
+    try:
+        departments = await service.list_distinct_responsible_departments(
+            current_user.user_id,
+            current_user.role_id,
+        )
+        return DistinctResponsibleDepartmentsResponse(
+            departments=departments,
+            total=len(departments),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error listing responsible departments: {str(e)}",
+        )
+
 
 @router.post("/list-all",
              summary="Get all accessible files (flat list)",

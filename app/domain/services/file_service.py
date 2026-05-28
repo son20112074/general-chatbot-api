@@ -377,6 +377,86 @@ class FileQueryService:
         
         # Execute the query with user hierarchy
         return await self.query_with_cursor(table, query_input, current_user_id)
+
+    async def _build_file_visibility_filter(
+        self,
+        user_id: int,
+        user_role_id: int,
+        effective_type: Optional[str] = None,
+    ) -> List[Any]:
+        """RBAC visibility conditions for file queries (mirrors list-all rules)."""
+        if user_role_id == settings.ADMIN_ROLE_ID and effective_type != "private":
+            return []
+
+        child_roles_result = await self.db.execute(text("""
+            SELECT id FROM roles
+            WHERE (parent_path ILIKE :exact_path
+            OR parent_path ILIKE :anywhere_path)
+            AND is_deleted = false
+        """), {
+            "exact_path": f",{user_role_id},",
+            "anywhere_path": f"%,{user_role_id},%",
+        })
+        child_role_ids = [row[0] for row in child_roles_result.fetchall()]
+
+        return [
+            or_(
+                FileModel.type == "general",
+                and_(
+                    FileModel.type == "private",
+                    FileModel.created_by == user_id,
+                ),
+                and_(
+                    FileModel.type == "store",
+                    FileModel.created_by == user_id,
+                ),
+                and_(
+                    FileModel.type == "organization",
+                    FileModel.role_id == user_role_id,
+                    FileModel.created_by == user_id,
+                ),
+                and_(
+                    FileModel.type == "organization",
+                    FileModel.role_id.in_(child_role_ids),
+                ) if child_role_ids else and_(False),
+            )
+        ]
+
+    async def list_distinct_responsible_departments(
+        self,
+        user_id: int,
+        user_role_id: int,
+    ) -> List[str]:
+        """Distinct department names from responsible_departments on visible files."""
+        visibility_filter = await self._build_file_visibility_filter(user_id, user_role_id)
+        base_cond = and_(
+            or_(FileModel.is_deleted == False, FileModel.is_deleted == None),
+            *visibility_filter,
+        )
+        dept_expr = func.unnest(FileModel.responsible_departments).label("department")
+        query = (
+            select(dept_expr)
+            .select_from(FileModel)
+            .where(base_cond)
+            .where(FileModel.responsible_departments.isnot(None))
+            .where(func.coalesce(func.array_length(FileModel.responsible_departments, 1), 0) > 0)
+        )
+        rows = (await self.db.execute(query)).all()
+
+        seen: set[str] = set()
+        departments: List[str] = []
+        for row in rows:
+            name = (row.department or "").strip()
+            if not name:
+                continue
+            key = name.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            departments.append(name)
+
+        departments.sort(key=lambda x: x.casefold())
+        return departments
     
     async def query_files(
         self,
@@ -391,61 +471,10 @@ class FileQueryService:
             # Override any client-supplied `type`.
             effective_type = "store" if query_params.store_id is not None else query_params.type
 
-            # ── Per-type visibility ──────────────────────────────────
-            # - organization: files at own role + subordinate roles (by role
-            #   hierarchy). Uses file.role_id — NOT file.created_by — so
-            #   historical files left behind by transferred users stay visible.
-            # - private:      only creator
-            # - store:        only creator (mirror of private)
-            # - general:      everyone (no owner filter)
-            # - admin:        sees everything regardless of type, except when
-            #                 explicitly filtering type=private (admin only sees
-            #                 their own private files — pre-existing behavior).
-            if user_role_id == settings.ADMIN_ROLE_ID and effective_type != "private":
-                visibility_filter = []
-            else:
-                # Resolve subordinate role ids
-                child_roles_result = await self.db.execute(text("""
-                    SELECT id FROM roles
-                    WHERE (parent_path ILIKE :exact_path
-                    OR parent_path ILIKE :anywhere_path)
-                    AND is_deleted = false
-                """), {
-                    "exact_path": f",{user_role_id},",
-                    "anywhere_path": f"%,{user_role_id},%",
-                })
-                child_role_ids = [row[0] for row in child_roles_result.fetchall()]
-                allowed_role_ids = [user_role_id] + child_role_ids
+            visibility_filter = await self._build_file_visibility_filter(
+                user_id, user_role_id, effective_type
+            )
 
-                visibility_filter = [
-                    or_(
-                        # general — visible to everyone
-                        FileModel.type == "general",
-                        # private — only creator
-                        and_(
-                            FileModel.type == "private",
-                            FileModel.created_by == user_id,
-                        ),
-                        # store — only creator (mirror of private)
-                        and_(
-                            FileModel.type == "store",
-                            FileModel.created_by == user_id,
-                        ),
-                        # organization at own role — same-role isolation:
-                        # only files created by self (peers hidden)
-                        and_(
-                            FileModel.type == "organization",
-                            FileModel.role_id == user_role_id,
-                            FileModel.created_by == user_id,
-                        ),
-                        # organization at subordinate roles — see all files
-                        and_(
-                            FileModel.type == "organization",
-                            FileModel.role_id.in_(child_role_ids),
-                        ) if child_role_ids else and_(False),
-                    )
-                ]
-            
             base_cond = and_(
                 or_(FileModel.is_deleted == False, FileModel.is_deleted == None),
                 *visibility_filter,
