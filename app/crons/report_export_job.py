@@ -6,15 +6,10 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-import csv
 import json as _json
 
-import docx as _docx
-import openpyxl
-import requests
 from docx import Document as DocxDocument
 from docx.shared import Pt
-from parser.pdf_parser import PDFParser
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -122,95 +117,6 @@ def _compute_period(frequency: FrequencyEnum, today: date) -> Tuple[date, date]:
         return _quarter_start(today), today
 
     return today, today
-
-
-# ── File content extractors (mirrors files.py) ───────────────────────────────
-
-def _extract_docx_content(file_path: str) -> str:
-    doc = _docx.Document(file_path)
-    parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-    for table in doc.tables:
-        for row in table.rows:
-            cells = [c.text.strip() for c in row.cells if c.text.strip()]
-            if cells:
-                parts.append(" | ".join(cells))
-    return "\n".join(parts)
-
-
-def _extract_doc_content(file_path: str) -> str:
-    try:
-        import docx2txt
-        return docx2txt.process(file_path) or ""
-    except ImportError:
-        return ""
-
-
-def _extract_xlsx_content(file_path: str) -> str:
-    wb = openpyxl.load_workbook(file_path, data_only=True)
-    parts = []
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        parts.append(f"=== Sheet: {sheet_name} ===")
-        for row in ws.iter_rows(values_only=True):
-            cells = [str(c) if c is not None else "" for c in row]
-            if any(c.strip() for c in cells if c):
-                parts.append(" | ".join(cells))
-    wb.close()
-    return "\n".join(parts)
-
-
-def _extract_text_content(file_path: str) -> str:
-    for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252", "ascii"):
-        try:
-            with open(file_path, "r", encoding=enc) as fh:
-                return fh.read()
-        except (UnicodeDecodeError, UnicodeError):
-            continue
-    with open(file_path, "rb") as fh:
-        return fh.read().decode("utf-8", errors="ignore")
-
-
-def _extract_csv_content(file_path: str) -> str:
-    for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
-        try:
-            with open(file_path, "r", encoding=enc, newline="") as fh:
-                sample = fh.read(1024)
-                fh.seek(0)
-                delim = "\t" if "\t" in sample else (";" if ";" in sample else ",")
-                rows = []
-                for i, row in enumerate(csv.reader(fh, delimiter=delim), 1):
-                    if row and any(c.strip() for c in row):
-                        rows.append(f"Row {i}: {' | '.join(row)}")
-                return "\n".join(rows)
-        except (UnicodeDecodeError, UnicodeError):
-            continue
-    return ""
-
-
-def _extract_pdf_content(file_path: str) -> str:
-    parser = PDFParser()
-    result = parser.parse_pdf(file_path)
-    if not result.get("success"):
-        raise Exception(result.get("error", "Không thể trích xuất nội dung từ file PDF"))
-    return result.get("content", "")
-
-
-_EXTRACTORS = {
-    ".docx": _extract_docx_content,
-    ".doc":  _extract_doc_content,
-    ".xlsx": _extract_xlsx_content,
-    ".txt":  _extract_text_content,
-    ".dat":  _extract_text_content,
-    ".csv":  _extract_csv_content,
-    ".pdf":  _extract_pdf_content,
-}
-
-
-def _extract_content_from_file(tmp_path: str, ext: str) -> str:
-    extractor = _EXTRACTORS.get(ext.lower())
-    if extractor:
-        return extractor(tmp_path)
-    return _extract_text_content(tmp_path)
 
 
 # ── File visibility ───────────────────────────────────────────────────────────
@@ -434,44 +340,11 @@ Extract information from INPUT TEXT into structured Markdown following the templ
 
     try:
         for f in files:
-            ext = Path(f.name).suffix or ".txt"
-            dl_path = os.path.join(tmp_dir, f"{f.id}_{Path(f.name).stem}{ext}")
             txt_path = os.path.join(tmp_dir, f"{f.id}_{Path(f.name).stem}.txt")
-            file_url = (
-                f"{settings.STORAGE_PUBLIC_URL.rstrip('/')}/{settings.STORAGE_BUCKET_NAME}/{f.path.lstrip('/')}"
-                if f.path else None
-            )
-            msg = f"[ReportExport] Fetching file id={f.id} name={f.name} url={file_url}"
+            text_content = f.content or ""
+            msg = f"[ReportExport] file id={f.id} name={f.name} content={len(text_content)} chars"
             logger.info(msg)
             print(msg)
-
-            text_content = ""
-            if file_url:
-                try:
-                    with requests.get(file_url, stream=True, timeout=60) as resp:
-                        resp.raise_for_status()
-                        with open(dl_path, "wb") as fh:
-                            for chunk in resp.iter_content(chunk_size=8192):
-                                if chunk:
-                                    fh.write(chunk)
-                    msg = f"[ReportExport] Downloaded {os.path.getsize(dl_path)} bytes → extracting ({ext})"
-                    logger.info(msg)
-                    print(msg)
-                    text_content = _extract_content_from_file(dl_path, ext)
-                    msg = f"[ReportExport] Extracted {len(text_content)} chars from {f.name}"
-                    logger.info(msg)
-                    print(msg)
-                except Exception as fetch_exc:
-                    msg = f"[ReportExport] Fetch/extract failed for {file_url}: {fetch_exc} — falling back to content column"
-                    logger.warning(msg)
-                    print(msg)
-                    text_content = f.content or ""
-            else:
-                msg = f"[ReportExport] No URL for file id={f.id}, using content column"
-                logger.warning(msg)
-                print(msg)
-                text_content = f.content or ""
-
             Path(txt_path).write_text(text_content, encoding="utf-8")
             file_path_map[txt_path] = f.id
 
