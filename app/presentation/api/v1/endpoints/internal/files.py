@@ -18,6 +18,7 @@ from app.presentation.api.v1.schemas.file import (
     FileUpdateSchema, FileMoveSchema, FileListAllSchema,
 )
 from app.infrastructure.extract_file_job_store import extract_file_jobs
+from app.infrastructure.services.milvus_cleanup_service import delete_chunks_by_path_async
 from app.utils.table_lookup import get_table_with_schema
 from app.utils.helpers import check_file_permission, compute_and_set_node_path, build_file_item, parse_datetime_safe
 from typing import List, Optional
@@ -1000,8 +1001,14 @@ async def delete_file(
         check_file_permission(file_obj, current_user.user_id, current_user.role_id)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    file_path = file_obj.path
     file_obj.is_deleted = True
+    file_obj.is_embedded = False
     await session.commit()
+    try:
+        await delete_chunks_by_path_async(file_path)
+    except Exception:
+        logger.exception("Milvus cleanup failed after file delete | file_id=%s path=%s", file_id, file_path)
 
 @router.put("/move/{file_id}",
             summary="Move file to another folder",

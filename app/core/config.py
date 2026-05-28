@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # Content processing limits
     CONTENT_LIMIT: int = 20000  # Maximum content length for API processing
 
+    # Milvus (vector cleanup on file delete)
+    MILVUS_URI: str = "http://host.docker.internal:19530"
+    MILVUS_COLLECTION: str = "db_docs_bge_m3_v4"
+
     # Topic classification
     TOPIC_CLASSIFY_INTERVAL_SECONDS: int = 30
     TOPIC_CLASSIFY_BATCH_SIZE: int = 5

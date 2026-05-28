@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import List, Optional, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,8 +10,10 @@ from app.domain.models.file import File
 from app.domain.models.store_file import StoreFile
 from app.domain.models.shared_store import SharedStore
 from app.utils.helpers import build_file_item
+from app.infrastructure.services.milvus_cleanup_service import delete_chunks_by_path_async
 
 ADMIN_ROLE_ID = settings.ADMIN_ROLE_ID
+logger = logging.getLogger(__name__)
 
 
 def _escape_like(value: str) -> str:
@@ -192,10 +195,26 @@ class StoreFilesService:
         if existing is None:
             raise LookupError("File is not in this store")
 
+        file_row = (
+            await self.db.execute(select(File.path).where(File.id == file_id))
+        ).scalar_one_or_none()
+
         existing.is_deleted = True
         existing.updated_at = datetime.utcnow()
         await self.db.commit()
         await self.db.refresh(existing)
+
+        if file_row:
+            try:
+                await delete_chunks_by_path_async(file_row)
+            except Exception:
+                logger.exception(
+                    "Milvus cleanup failed after store file remove | store_id=%s file_id=%s path=%s",
+                    store_id,
+                    file_id,
+                    file_row,
+                )
+
         return {"id": existing.id, "store_id": store_id, "file_id": file_id, "is_deleted": True}
 
     # ── bulk add / remove ────────────────────────────────────
@@ -273,6 +292,11 @@ class StoreFilesService:
         ids = list(dict.fromkeys(int(x) for x in file_ids))
 
         try:
+            paths_q = select(File.id, File.path).where(File.id.in_(ids))
+            path_by_file_id = {
+                row[0]: row[1] for row in (await self.db.execute(paths_q)).all()
+            }
+
             now = datetime.utcnow()
             stmt = (
                 update(StoreFile)
@@ -287,6 +311,23 @@ class StoreFilesService:
             result = await self.db.execute(stmt)
             await self.db.commit()
             updated = result.rowcount or 0
+
+            seen_paths: set[str] = set()
+            for fid in ids:
+                path = path_by_file_id.get(fid)
+                if not path or path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                try:
+                    await delete_chunks_by_path_async(path)
+                except Exception:
+                    logger.exception(
+                        "Milvus cleanup failed after bulk store file remove | store_id=%s file_id=%s path=%s",
+                        store_id,
+                        fid,
+                        path,
+                    )
+
             return {"updated": updated, "total": updated}
         except Exception:
             await self.db.rollback()

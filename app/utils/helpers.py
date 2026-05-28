@@ -179,5 +179,6 @@ def build_file_item(f, u_id, u_name) -> dict:
         "processing_duration": f.processing_duration,
         "content": f.content,
         "summary": f.summary,
-        "responsible_departments": f.responsible_departments
+        "responsible_departments": f.responsible_departments,
+        "responsible_departments_reasons": f.responsible_departments_reasons,
     }

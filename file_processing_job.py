@@ -13,7 +13,7 @@ import tempfile
 import json
 import unicodedata
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import time
 from datetime import datetime
 import requests
@@ -122,7 +122,9 @@ class FileProcessingJob:
             
             # Extract metadata (countries, technologies, companies, important news)
             metadata = self._extract_metadata(summary, normalized_ext)
-            responsible_departments = self._classify_responsible_departments(summary, normalized_ext)
+            responsible_departments, responsible_departments_reasons = (
+                self._classify_responsible_departments(summary, normalized_ext)
+            )
 
             # Log summary generation result
             if summary:
@@ -149,6 +151,7 @@ class FileProcessingJob:
                 summary,
                 metadata,
                 responsible_departments,
+                responsible_departments_reasons,
                 True,
                 processing_duration,
             )
@@ -337,6 +340,26 @@ class FileProcessingJob:
         first = departments[0]
         return (first.get("name") or "").strip() or ""
 
+    _DEFAULT_FALLBACK_REASON = (
+        "Phân loại mặc định: không xác định được phòng ban phù hợp từ tóm tắt."
+    )
+    _MISSING_REASON = "Không có giải thích từ mô hình."
+
+    def _fallback_department_classification(
+        self, departments: List[Dict[str, str]]
+    ) -> Tuple[List[str], List[str]]:
+        """Return fallback department list with a matching default reason."""
+        fallback = self._default_fallback_department_name(departments)
+        if fallback:
+            return [fallback], [self._DEFAULT_FALLBACK_REASON]
+        return [], []
+
+    @staticmethod
+    def _reason_at_index(raw_reasons: List[Any], index: int) -> str:
+        if index < len(raw_reasons) and isinstance(raw_reasons[index], str):
+            return raw_reasons[index].strip()
+        return FileProcessingJob._MISSING_REASON
+
     def _load_departments(self) -> List[Dict[str, str]]:
         """Load department taxonomy from JSON config file."""
         if self._departments_cache is not None:
@@ -377,14 +400,16 @@ class FileProcessingJob:
             self._departments_cache = []
             return self._departments_cache
 
-    def _classify_responsible_departments(self, summary: Optional[str], extension: str) -> List[str]:
-        """Classify responsible departments from summary and department taxonomy (Vietnamese names)."""
+    def _classify_responsible_departments(
+        self, summary: Optional[str], extension: str
+    ) -> Tuple[List[str], List[str]]:
+        """Classify responsible departments and per-department reasons from summary."""
         if not summary or len(summary.strip()) == 0:
-            return []
+            return [], []
 
         departments = self._load_departments()
         if not departments:
-            return []
+            return [], []
 
         taxonomy_text = "\n".join(
             f"- Tên phòng ban: {dept['name']}\n  Mô tả: {dept.get('description', '')}"
@@ -400,10 +425,18 @@ class FileProcessingJob:
                 {taxonomy_text}
 
                 Trả về DUY NHẤT một JSON hợp lệ với cấu trúc chính xác:
-                {{"responsible_departments": ["Tên phòng ban 1", "Tên phòng ban 2"]}}
+                {{
+                  "responsible_departments": ["Tên phòng ban 1", "Tên phòng ban 2"],
+                  "responsible_departments_reasons": [
+                    "1-3 câu tiếng Việt: trích ý chính từ bản tóm tắt giải thích vì sao phòng ban này phù hợp",
+                    "..."
+                  ]
+                }}
 
                 Quy tắc:
-                - Mỗi phần tử trong mảng phải là đúng chuỗi "Tên phòng ban" như trong danh mục (tiếng Việt có dấu).
+                - Mỗi phần tử trong responsible_departments phải là đúng chuỗi "Tên phòng ban" như trong danh mục (tiếng Việt có dấu).
+                - responsible_departments_reasons phải cùng độ dài và cùng thứ tự với responsible_departments; mỗi lý do tương ứng một phòng ban.
+                - Mỗi lý do ngắn gọn (1-3 câu), bám nội dung bản tóm tắt, không bịa thêm.
                 - Phòng ban phù hợp nhất phải đứng đầu danh sách.
                 - Luôn trả về ít nhất một phòng ban phù hợp nhất; không để mảng rỗng.
                 - Có thể chọn nhiều phòng ban nếu nội dung liên quan chéo.
@@ -433,34 +466,35 @@ class FileProcessingJob:
                 .get("content", "")
             )
             if not llm_content:
-                fallback = self._default_fallback_department_name(departments)
-                return [fallback] if fallback else []
+                return self._fallback_department_classification(departments)
 
             cleaned = self.summary_service._clean_json_content(llm_content.strip())
             parsed = json.loads(cleaned)
             raw_names = parsed.get("responsible_departments", [])
+            raw_reasons = parsed.get("responsible_departments_reasons", [])
 
             if not isinstance(raw_names, list):
-                fallback = self._default_fallback_department_name(departments)
-                return [fallback] if fallback else []
+                return self._fallback_department_classification(departments)
+            if not isinstance(raw_reasons, list):
+                raw_reasons = []
 
             normalized_names: List[str] = []
-            for item in raw_names:
+            normalized_reasons: List[str] = []
+            for i, item in enumerate(raw_names):
                 if not isinstance(item, str):
                     continue
                 canonical = self._resolve_canonical_department_name(item, departments)
                 if canonical and canonical not in normalized_names:
                     normalized_names.append(canonical)
+                    normalized_reasons.append(self._reason_at_index(raw_reasons, i))
 
             if not normalized_names:
-                fallback = self._default_fallback_department_name(departments)
-                return [fallback] if fallback else []
+                return self._fallback_department_classification(departments)
 
-            return normalized_names
+            return normalized_names, normalized_reasons
         except Exception as e:
             logger.warning(f"Failed to classify responsible departments for {extension}: {e}")
-            fallback = self._default_fallback_department_name(departments)
-            return [fallback] if fallback else []
+            return self._fallback_department_classification(departments)
 
     
     def _extract_excel_content(self, result: Dict[str, Any]) -> str:
@@ -499,6 +533,7 @@ class FileProcessingJob:
         summary: Optional[str],
         metadata: Optional[Dict[str, Any]],
         responsible_departments: Optional[List[str]],
+        responsible_departments_reasons: Optional[List[str]],
         is_processed: bool,
         processing_duration: Optional[int] = None
     ):
@@ -528,6 +563,9 @@ class FileProcessingJob:
                 "important_news": metadata.get("important_news", []) if metadata else [],
                 "listed_timeline": metadata.get("listed_timeline", []) if metadata else [],
                 "responsible_departments": responsible_departments if responsible_departments else [],
+                "responsible_departments_reasons": (
+                    responsible_departments_reasons if responsible_departments_reasons else []
+                ),
             })
             
             # Update file record
