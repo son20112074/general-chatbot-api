@@ -9,6 +9,7 @@ from docx.shared import Pt
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+import asyncio
 
 from app.core.database import get_db, get_db_session
 from app.crons.report_export_job import _process_template, _running_templates
@@ -323,7 +324,7 @@ async def _run_report_once_bg(template_id: int) -> None:
 @router.post("/templates/{template_id}/run", status_code=status.HTTP_202_ACCEPTED, tags=["Reports"])
 async def run_report_once(
     template_id: int,
-    background_tasks: BackgroundTasks,
+    # background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -335,7 +336,8 @@ async def run_report_once(
     if template.file_mode != FileModeEnum.SELECT:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Run once is only supported for select-mode templates")
 
-    background_tasks.add_task(_run_report_once_bg, template_id)
+    # background_tasks.add_task(_run_report_once_bg, template_id)
+    asyncio.create_task(_run_report_once_bg(template_id))
     return {"message": "Report generation started"}
 
 
