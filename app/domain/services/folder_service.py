@@ -334,8 +334,9 @@ class FolderService:
             )
             children = []
             for r in root_roles_result.scalars().all():
-                children.append(await self._build_role_node(r.id, r.parent_path, depth - 1))
-            result["current_role"] = {"id": None, "name": "Admin"}
+                if r.id != self._user_role_id:
+                    children.append(await self._build_role_node(r.id, r.parent_path, depth - 1))
+            result["current_role"] = {"id": self._user_role_id, "name": "Admin"}
             result["children"] = children
             return result
 
