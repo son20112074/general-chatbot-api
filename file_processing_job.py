@@ -29,6 +29,7 @@ from parser.file_parser import FileParser, normalize_file_extension
 from parser.config import get_base_url
 from parser.summary_service import SummaryService
 from app.core.config import settings
+from app.domain.services.system_setting_service import SystemSettingService
 
 # Configure logging
 logging.basicConfig(
@@ -52,8 +53,6 @@ class FileProcessingJob:
         self.db = db_session
         self.parser = FileParser()
         self.summary_service = SummaryService(api_url=settings.LLM_API)
-        self.departments_config_path = Path(__file__).resolve().parent / "config" / "departments.json"
-        self._departments_cache: Optional[List[Dict[str, str]]] = None
         self.processed_count = 0
         self.failed_count = 0
         self.errors = []
@@ -123,7 +122,7 @@ class FileProcessingJob:
             # Extract metadata (countries, technologies, companies, important news)
             metadata = self._extract_metadata(summary, normalized_ext)
             responsible_departments, responsible_departments_reasons = (
-                self._classify_responsible_departments(summary, normalized_ext)
+                await self._classify_responsible_departments(summary, normalized_ext)
             )
 
             # Log summary generation result
@@ -360,54 +359,18 @@ class FileProcessingJob:
             return raw_reasons[index].strip()
         return FileProcessingJob._MISSING_REASON
 
-    def _load_departments(self) -> List[Dict[str, str]]:
-        """Load department taxonomy from JSON config file."""
-        if self._departments_cache is not None:
-            return self._departments_cache
+    async def _load_departments(self) -> List[Dict[str, str]]:
+        """Load department taxonomy from system_settings.departments (JSON array)."""
+        return await SystemSettingService(self.db).get_departments_list()
 
-        try:
-            if not self.departments_config_path.exists():
-                logger.warning(f"Departments config not found at {self.departments_config_path}")
-                self._departments_cache = []
-                return self._departments_cache
-
-            with self.departments_config_path.open("r", encoding="utf-8") as f:
-                raw_departments = json.load(f)
-
-            if not isinstance(raw_departments, list):
-                logger.warning("Departments config is invalid: expected a list")
-                self._departments_cache = []
-                return self._departments_cache
-
-            departments: List[Dict[str, str]] = []
-            for item in raw_departments:
-                if not isinstance(item, dict):
-                    continue
-                code = str(item.get("code", "")).strip()
-                name = str(item.get("name", "")).strip()
-                description = str(item.get("description", "")).strip()
-                if code and name:
-                    departments.append({
-                        "code": code,
-                        "name": name,
-                        "description": description,
-                    })
-
-            self._departments_cache = departments
-            return self._departments_cache
-        except Exception as e:
-            logger.warning(f"Failed to load departments config: {e}")
-            self._departments_cache = []
-            return self._departments_cache
-
-    def _classify_responsible_departments(
+    async def _classify_responsible_departments(
         self, summary: Optional[str], extension: str
     ) -> Tuple[List[str], List[str]]:
         """Classify responsible departments and per-department reasons from summary."""
         if not summary or len(summary.strip()) == 0:
             return [], []
 
-        departments = self._load_departments()
+        departments = await self._load_departments()
         if not departments:
             return [], []
 
