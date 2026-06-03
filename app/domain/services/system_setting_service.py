@@ -9,7 +9,7 @@ from app.domain.models.system_setting import SystemSetting
 
 logger = logging.getLogger(__name__)
 
-DEPARTMENTS_SETTING_KEY = "departments"
+DEPARTMENTS_SETTING_KEY = "department"
 
 DEFAULT_DEPARTMENTS_JSON = """[
   {
