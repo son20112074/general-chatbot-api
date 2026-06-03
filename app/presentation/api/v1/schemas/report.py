@@ -89,7 +89,7 @@ class ReportDocumentItem(BaseModel):
 
 
 class MarkdownReportCreate(BaseModel):
-    markdown: str = Field(..., max_length=100_000)
+    markdown: str
 
 
 class ReportResponse(BaseModel):
