@@ -52,6 +52,22 @@ class UserService:
         parent_path = target_role.parent_path or ""
         return f",{current_role_id}," in parent_path
 
+    # ── role_path enrichment ─────────────────────────────────
+
+    @staticmethod
+    def _attach_role_paths(rows):
+        """Attach `role_path` (roles.parent_path) onto each joined User row.
+
+        `rows` are (User, parent_path) tuples produced by a query that
+        LEFT JOINs the roles table on `Role.id == User.role_id`.
+        Returns the list of User ORM objects with a transient `role_path` attr.
+        """
+        users = []
+        for user, role_path in rows:
+            user.role_path = role_path
+            users.append(user)
+        return users
+
     # ── hierarchy ────────────────────────────────────────────
 
     async def get_child_roles(self, role_id: int) -> List[int]:
@@ -82,8 +98,17 @@ class UserService:
         return user
 
     async def get_user(self, user_id: int) -> Optional[User]:
-        result = await self.db.execute(select(User).where(User.id == user_id))
-        return result.scalar_one_or_none()
+        result = await self.db.execute(
+            select(User, Role.parent_path)
+            .outerjoin(Role, Role.id == User.role_id)
+            .where(User.id == user_id)
+        )
+        row = result.first()
+        if row is None:
+            return None
+        user, role_path = row
+        user.role_path = role_path
+        return user
 
     async def get_user_by_email(self, email: str) -> Optional[User]:
         result = await self.db.execute(select(User).where(User.email == email))
@@ -152,8 +177,9 @@ class UserService:
             )
             is_shared_expr = (SharedStore.id.isnot(None)).label("is_shared")
             data_query = (
-                select(User, is_shared_expr)
+                select(User, is_shared_expr, Role.parent_path)
                 .outerjoin(SharedStore, share_join_cond)
+                .outerjoin(Role, Role.id == User.role_id)
                 .where(*base_where)
                 .order_by(is_shared_expr.desc(), User.id.desc())
                 .offset(skip)
@@ -161,7 +187,8 @@ class UserService:
             )
             rows = (await self.db.execute(data_query)).all()
             users = []
-            for u, is_shared in rows:
+            for u, is_shared, role_path in rows:
+                u.role_path = role_path
                 d = u.to_dict() if hasattr(u, "to_dict") else {
                     c.name: getattr(u, c.name) for c in u.__table__.columns
                 }
@@ -169,13 +196,15 @@ class UserService:
                 users.append(d)
             return {"data": users, "total": total}
 
-        # No store_id: legacy behavior — return ORM rows.
+        # No store_id: legacy behavior — return ORM rows enriched with role_path.
         data_query = (
-            select(User).where(*base_where)
+            select(User, Role.parent_path)
+            .outerjoin(Role, Role.id == User.role_id)
+            .where(*base_where)
             .order_by(User.id.desc()).offset(skip).limit(limit)
         )
-        result = await self.db.execute(data_query)
-        users = result.scalars().all()
+        rows = (await self.db.execute(data_query)).all()
+        users = self._attach_role_paths(rows)
         return {"data": users, "total": total}
 
     async def get_all_users(
@@ -232,8 +261,9 @@ class UserService:
             )
             is_shared_expr = (SharedStore.id.isnot(None)).label("is_shared")
             data_query = (
-                select(User, is_shared_expr)
+                select(User, is_shared_expr, Role.parent_path)
                 .outerjoin(SharedStore, share_join_cond)
+                .outerjoin(Role, Role.id == User.role_id)
                 .where(*base_where)
                 .order_by(is_shared_expr.desc(), User.id.desc())
                 .offset(skip)
@@ -241,7 +271,8 @@ class UserService:
             )
             rows = (await self.db.execute(data_query)).all()
             users = []
-            for u, is_shared in rows:
+            for u, is_shared, role_path in rows:
+                u.role_path = role_path
                 d = u.to_dict() if hasattr(u, "to_dict") else {
                     c.name: getattr(u, c.name) for c in u.__table__.columns
                 }
@@ -250,11 +281,13 @@ class UserService:
             return {"data": users, "total": total}
 
         data_query = (
-            select(User).where(*base_where)
+            select(User, Role.parent_path)
+            .outerjoin(Role, Role.id == User.role_id)
+            .where(*base_where)
             .order_by(User.id.desc()).offset(skip).limit(limit)
         )
-        result = await self.db.execute(data_query)
-        users = result.scalars().all()
+        rows = (await self.db.execute(data_query)).all()
+        users = self._attach_role_paths(rows)
         return {"data": users, "total": total}
 
     async def update_user(self, user_id: int, user_data: UserUpdate, current_role_id: int) -> Optional[User]:
@@ -347,8 +380,11 @@ class UserService:
                 User.account_name.ilike(f"%{escaped}%")
             ))
 
+        users_query = users_query.add_columns(Role.parent_path).outerjoin(
+            Role, Role.id == User.role_id
+        )
         users_result = await self.db.execute(users_query)
-        users = users_result.scalars().all()
+        users = self._attach_role_paths(users_result.all())
 
         # Build role-user tree
         role_map = {}
@@ -430,10 +466,14 @@ class UserService:
             (query_params.page - 1) * query_params.page_size
         ).limit(query_params.page_size)
 
+        query = query.add_columns(Role.parent_path).outerjoin(
+            Role, Role.id == User.role_id
+        )
         result = await self.db.execute(query)
         total_result = await self.db.execute(count_query)
 
-        return {"data": result.scalars().all(), "total": total_result.scalar_one()}
+        users = self._attach_role_paths(result.all())
+        return {"data": users, "total": total_result.scalar_one()}
 
     # ── change password (unchanged) ──────────────────────────
 
