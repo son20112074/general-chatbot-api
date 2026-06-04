@@ -6,6 +6,7 @@ from app.core.database import get_db
 from app.domain.services.user_service import UserService
 from app.domain.services.role_service import RoleService
 from app.domain.models.user import User
+from app.domain.models.role import Role
 from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.auth import TokenData, ChangePasswordRequest
 from app.presentation.api.v1.schemas.user import UserCreate, UserUpdate, UserResponse, GetUsersQuery
@@ -246,19 +247,23 @@ async def get_peers_and_children(
     if not current_user_obj:
         raise HTTPException(status_code=404, detail="Current user not found")
     peer_users_result = await db.execute(
-        select(User).where(
+        select(User, Role.parent_path)
+        .outerjoin(Role, Role.id == User.role_id)
+        .where(
             User.role_id == current_user_obj.role_id,
             User.id != current_user.user_id,
             User.status == True
         )
     )
-    peer_users = peer_users_result.scalars().all()
+    peer_users = user_service._attach_role_paths(peer_users_result.all())
     child_role_ids = await role_service.get_child_roles(current_user_obj.role_id)
     if child_role_ids:
         child_users_result = await db.execute(
-            select(User).where(User.role_id.in_(child_role_ids), User.status == True)
+            select(User, Role.parent_path)
+            .outerjoin(Role, Role.id == User.role_id)
+            .where(User.role_id.in_(child_role_ids), User.status == True)
         )
-        child_users = child_users_result.scalars().all()
+        child_users = user_service._attach_role_paths(child_users_result.all())
     else:
         child_users = []
     return {

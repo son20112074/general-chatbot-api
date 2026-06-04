@@ -39,5 +39,8 @@ class User(Base):
             "created_by": self.created_by,
             "last_login_at": self.last_login_at.isoformat() if self.last_login_at else None,
             "full_name": self.full_name,
-            "status": self.status
-        } 
+            "status": self.status,
+            # role_path is not a column; it is attached transiently when the
+            # query joins the roles table (see UserService read methods).
+            "role_path": getattr(self, "role_path", None)
+        }

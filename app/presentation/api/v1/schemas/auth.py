@@ -21,6 +21,7 @@ class UserInfoResponse(BaseModel):
     account_name: str
     full_name: str
     role_id: int
+    role_path: Optional[str] = None
     avatar: Optional[str] = None
     email: Optional[str] = None
     created_at: Optional[str] = None

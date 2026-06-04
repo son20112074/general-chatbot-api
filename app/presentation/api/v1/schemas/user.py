@@ -36,6 +36,7 @@ class UserResponse(BaseModel):
     full_name: str
     avatar: Optional[str] = None
     role_id: Optional[int] = None
+    role_path: Optional[str] = None
     status: Optional[bool] = True
     created_at: Optional[datetime] = None
     created_by: Optional[int] = None
