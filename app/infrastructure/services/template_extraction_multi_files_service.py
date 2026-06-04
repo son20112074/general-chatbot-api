@@ -136,9 +136,12 @@ class TemplateExtractionMultiFilesService:
             self._elapsed_ms(merge_started),
         )
 
+        file_count = len(file_paths)
+        min_paragraphs = max(3, 3 * file_count)
+
         llm_cluster_started = time.perf_counter()
         llm_clustered_markdown = await self._cluster_markdown_via_llm(
-            merged_markdown, template_keys, template_tree
+            merged_markdown, template_keys, template_tree, min_paragraphs
         )
         logger.info(
             "multi_extract:llm_cluster_done in_chars=%s out_chars=%s elapsed_ms=%s",
@@ -151,7 +154,9 @@ class TemplateExtractionMultiFilesService:
         json_started = time.perf_counter()
         print(final_markdown)
         if template_tree:
-            final_json = await self._map_to_json_via_llm(final_markdown, template_tree)
+            final_json = await self._map_to_json_via_llm(
+                final_markdown, template_tree, min_paragraphs
+            )
         else:
             final_json = self._final_markdown_to_json_with_template(
                 final_markdown, template_keys
@@ -376,6 +381,7 @@ JSON:"""
         merged_markdown: str,
         template_keys: List[str],
         template_tree: Optional[Dict] = None,
+        min_paragraphs: int = 3,
     ) -> str:
         if not merged_markdown or not merged_markdown.strip():
             logger.info("multi_cluster:skip_empty_markdown")
@@ -387,7 +393,7 @@ JSON:"""
 
         tasks = [
             asyncio.create_task(
-                self._cluster_one_chunk(idx, chunk, template_keys, template_tree)
+                self._cluster_one_chunk(idx, chunk, template_keys, template_tree, min_paragraphs)
             )
             for idx, chunk in enumerate(chunks)
         ]
@@ -403,7 +409,9 @@ JSON:"""
 
         global_started = time.perf_counter()
         logger.info("multi_cluster:global_merge_start chars=%s", len(combined))
-        _, final = await self._cluster_one_chunk(-1, combined, template_keys, template_tree)
+        _, final = await self._cluster_one_chunk(
+            -1, combined, template_keys, template_tree, min_paragraphs
+        )
         logger.info(
             "multi_cluster:global_merge_done out_chars=%s elapsed_ms=%s",
             len(final or ""),
@@ -424,9 +432,12 @@ JSON:"""
         chunk_markdown: str,
         template_keys: List[str],
         template_tree: Optional[Dict] = None,
+        min_paragraphs: int = 3,
     ) -> Tuple[int, str]:
         started = time.perf_counter()
-        prompt = self._build_cluster_prompt(chunk_markdown, template_keys, template_tree)
+        prompt = self._build_cluster_prompt(
+            chunk_markdown, template_keys, template_tree, min_paragraphs
+        )
         try:
             logger.info("multi_cluster:chunk_start idx=%s chars=%s", idx, len(chunk_markdown))
             clustered = await self._extraction_service._call_llm(prompt)
@@ -453,7 +464,9 @@ JSON:"""
         chunk_markdown: str,
         template_keys: List[str],
         template_tree: Optional[Dict] = None,
+        min_paragraphs: int = 3,
     ) -> str:
+        summary_paragraphs = max(2, min_paragraphs - 1)
         if template_tree:
             template_section = TemplateExtractionMultiFilesService._tree_to_markdown_template(
                 template_tree
@@ -495,9 +508,10 @@ JSON:"""
         - Prefer approximate mapping over null
         - null is ONLY allowed if absolutely no related information exists
 
-        - Each LEAF section MUST contain at least 3 detailed paragraphs, EXCEPT sections whose title contains summary/conclusion/finalize/final/evaluation/đánh giá/kết luận/tổng kết/tổng hợp/kiến nghị — those need only 2-3 paragraphs
+        - Each LEAF section MUST contain at least {min_paragraphs} detailed paragraphs, EXCEPT sections whose title contains summary/conclusion/finalize/final/evaluation/đánh giá/kết luận/tổng kết/tổng hợp/kiến nghị — those need only {summary_paragraphs} paragraphs
         - Each paragraph MUST have 4-8 sentences covering different aspects of the topic — do NOT keep paragraphs short
         - Include all relevant facts, context, background, implications, and details from the input
+        - DO NOT make up, invent, fabricate, or assume any data. Use ONLY information that is explicitly present in the input. If the input lacks enough material to reach {min_paragraphs} paragraphs for a section, write only as many paragraphs as the input genuinely supports rather than inventing content
         - Separate paragraphs with a blank line
         - NO bullet points
         - NO explanations about the writing process
@@ -533,6 +547,7 @@ JSON:"""
         self,
         merged_markdown: str,
         template_tree: Dict,
+        min_paragraphs: int = 3,
     ) -> Dict[str, Any]:
         """Fill the template scaffold with extracted content by asking the LLM to return JSON directly.
 
@@ -541,6 +556,7 @@ JSON:"""
         """
         scaffold = self._build_scaffold(template_tree)
         scaffold_json = json.dumps(scaffold, ensure_ascii=False, indent=2)
+        summary_paragraphs = max(2, min_paragraphs - 1)
 
         prompt = f"""You are an information extraction expert.
 
@@ -553,7 +569,8 @@ Fill the provided JSON template with information extracted from the input docume
 ## RULES
 - Return ONLY valid JSON that exactly matches the template structure
 - Keep ALL keys — do not add or omit any
-- Fill each leaf (currently null) with at least 3 detailed Vietnamese paragraphs, where each paragraph has 4-8 sentences covering all relevant facts, figures, context, background, and implications from the input — do NOT keep paragraphs short. Separate paragraphs with \n\n. EXCEPTION: if the leaf key contains summary/conclusion/finalize/final/evaluation/đánh giá/kết luận/tổng kết/tổng hợp/kiến nghị, use only 2-3 paragraphs
+- Fill each leaf (currently null) with at least {min_paragraphs} detailed Vietnamese paragraphs, where each paragraph has 4-8 sentences covering all relevant facts, figures, context, background, and implications from the input — do NOT keep paragraphs short. Separate paragraphs with \n\n. EXCEPTION: if the leaf key contains summary/conclusion/finalize/final/evaluation/đánh giá/kết luận/tổng kết/tổng hợp/kiến nghị, use only {summary_paragraphs} paragraphs
+- DO NOT make up, invent, fabricate, or assume any data. Use ONLY information explicitly present in the input. If the input does not contain enough material to reach {min_paragraphs} paragraphs for a key, write only as many paragraphs as the input genuinely supports rather than inventing content
 - If no information is available for a key → keep its value as null
 - Do NOT wrap the output in markdown code fences
 - Do NOT explain
