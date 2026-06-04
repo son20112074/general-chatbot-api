@@ -70,3 +70,6 @@ docs/
 *.log
 *.log*
 logs/*
+
+# Claude Code local agent data / worktrees
+.claude/
