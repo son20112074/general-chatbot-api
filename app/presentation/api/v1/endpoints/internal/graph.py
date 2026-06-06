@@ -193,10 +193,14 @@ async def _get_filtered_nodes_and_edges(
             if e.target_node_id in matched_node_ids:
                 visible_node_ids.add(e.source_node_id)
 
-        # Re-fetch nodes with expanded IDs (respecting access control)
+        # Re-fetch nodes with expanded IDs (respecting access control and entity type filters)
         expanded_query = select(Node).where(Node.id.in_(visible_node_ids))
         if accessible_node_ids is not None:
             expanded_query = expanded_query.where(Node.id.in_(accessible_node_ids))
+        # Apply entity_type filter to neighbor nodes as well
+        # reference: https://www.notion.so/Update-i-u-ki-n-l-y-graph-node-theo-filtering-3771b823fe018033a352ff1dd053f3d1?v=3311b823fe018019a4bf000c82043f4f&source=copy_link
+        if entity_types:
+            expanded_query = expanded_query.where(Node.entity_type.in_(entity_types))
         nodes = (await db.execute(expanded_query)).scalars().all()
         visible_node_ids = {n.id for n in nodes}
     else:
