@@ -504,9 +504,12 @@ async def get_file_dashboard(
         from sqlalchemy import func, case, select
         from app.domain.models import File
         
-        # Lấy danh sách user IDs trong hierarchy
-        file_query_service = FileQueryService(session)
-        user_ids = await file_query_service.get_user_hierarchy_ids(current_user.user_id)
+        # Phân quyền: chỉ filter theo user hierarchy nếu không phải admin
+        base_conditions = []
+        if current_user.role_id != ADMIN_ROLE_ID:
+            file_query_service = FileQueryService(session)
+            user_ids = await file_query_service.get_user_hierarchy_ids(current_user.user_id)
+            base_conditions.append(File.created_by.in_(user_ids))
         
         # Xây dựng điều kiện lọc theo thời gian
         time_conditions = []
@@ -516,7 +519,7 @@ async def get_file_dashboard(
             time_conditions.append(File.created_at <= to_time)
         
         # Tổng số file và tổng dung lượng
-        total_query_conditions = [File.created_by.in_(user_ids)] + time_conditions
+        total_query_conditions = base_conditions + time_conditions
         total_query = await session.execute(
             select(
                 func.count(File.id).label('total_files'),
@@ -528,7 +531,7 @@ async def get_file_dashboard(
         total_size = total_result.total_size or 0
         
         # Số file đã xử lý và chưa xử lý
-        processed_query_conditions = [File.created_by.in_(user_ids)] + time_conditions
+        processed_query_conditions = base_conditions + time_conditions
         processed_query = await session.execute(
             select(
                 func.count(case((File.is_processed == True, 1))).label('processed'),
@@ -541,7 +544,7 @@ async def get_file_dashboard(
         unprocessed_files = (processed_result.unprocessed or 0) + (processed_result.pending or 0)
         
         # Thống kê theo extension
-        extension_query_conditions = [File.created_by.in_(user_ids)] + time_conditions
+        extension_query_conditions = base_conditions + time_conditions
         extension_query = await session.execute(
             select(
                 File.extension,
@@ -554,7 +557,7 @@ async def get_file_dashboard(
         files_by_extension = {row.extension or 'unknown': row.count for row in extension_results}
         
         # Thống kê theo trạng thái xử lý
-        status_query_conditions = [File.created_by.in_(user_ids)] + time_conditions
+        status_query_conditions = base_conditions + time_conditions
         status_query = await session.execute(
             select(
                 case(
@@ -570,8 +573,7 @@ async def get_file_dashboard(
         files_by_status = {row.status: row.count for row in status_results}
         
         # Tính thời gian xử lý trung bình (chỉ cho các file đã xử lý có processing_duration)
-        avg_duration_query_conditions = [
-            File.created_by.in_(user_ids),
+        avg_duration_query_conditions = base_conditions + [
             File.is_processed == True,
             File.processing_duration.isnot(None)
         ] + time_conditions
