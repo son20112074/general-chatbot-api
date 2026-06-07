@@ -34,6 +34,9 @@ import openpyxl
 import csv
 import codecs
 from parser.pdf_parser import PDFParser
+from parser.image_parser import ImageParser
+
+IMAGE_EXTENSIONS = ImageParser.SUPPORTED_EXTENSIONS
 
 ADMIN_ROLE_ID = settings.ADMIN_ROLE_ID
 
@@ -334,6 +337,18 @@ def extract_pdf_content(file_path: str) -> str:
     except Exception as e:
         raise Exception(f"Lỗi khi đọc file PDF: {str(e)}")
 
+def extract_image_content(file_path: str) -> str:
+    """Trích xuất nội dung từ file ảnh bằng PaddleOCR-VL (cùng pipeline PDF dạng ảnh)."""
+    try:
+        parser = ImageParser()
+        result = parser.parse_image(file_path)
+        if not result.get("success"):
+            err = result.get("error", "Không thể trích xuất nội dung từ file ảnh")
+            raise Exception(err)
+        return result.get("content", "")
+    except Exception as e:
+        raise Exception(f"Lỗi khi đọc file ảnh: {str(e)}")
+
 async def _perform_extract_file_content(
     file_path: str,
     current_user: TokenData,
@@ -342,7 +357,10 @@ async def _perform_extract_file_content(
     local_path = _resolve_static_file_path(file_path)
     local_file_path = str(local_path)
     file_extension = os.path.splitext(str(local_path))[1].lower()
-    supported_extensions = [".doc", ".docx", ".xlsx", ".txt", ".csv", ".dat", ".pdf"]
+    supported_extensions = [
+        ".doc", ".docx", ".xlsx", ".txt", ".csv", ".dat", ".pdf",
+        *IMAGE_EXTENSIONS,
+    ]
 
     if file_extension not in supported_extensions:
         raise HTTPException(
@@ -378,6 +396,8 @@ async def _perform_extract_file_content(
         content = extract_csv_content(local_file_path)
     elif file_extension == ".pdf":
         content = await asyncio.to_thread(extract_pdf_content, local_file_path)
+    elif file_extension in IMAGE_EXTENSIONS:
+        content = await asyncio.to_thread(extract_image_content, local_file_path)
 
     static_root = Path("static").resolve()
     rel_for_url = os.path.relpath(local_path, static_root).replace(os.sep, "/")
@@ -420,7 +440,7 @@ async def extract_file_content(
 ):
     """
     API để trích xuất nội dung từ file trong thư mục static (vd: static/uploads/...).
-    Hỗ trợ các định dạng: doc, docx, xlsx, txt, csv, dat, pdf
+    Hỗ trợ các định dạng: doc, docx, xlsx, txt, csv, dat, pdf, png, jpg, jpeg, tiff, webp, gif, bmp
     """
     try:
         return await _perform_extract_file_content(request.file_path, current_user)
