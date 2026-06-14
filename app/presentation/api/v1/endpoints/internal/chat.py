@@ -33,6 +33,7 @@ async def get_first_messages(
             ChatMessage.type.label("type"),
             ChatMessage.created_at.label("created_at"),
             ChatMessage.chat_type.label("chat_type"),
+            ChatMessage.source_path.label("source_path"),
             func.row_number()
             .over(partition_by=ChatMessage.session_id, order_by=ChatMessage.created_at.asc())
             .label("rn"),
@@ -47,6 +48,7 @@ async def get_first_messages(
             subq.c.id,
             subq.c.data,
             subq.c.type,
+            subq.c.source_path,
             subq.c.created_at,
         )
         .select_from(subq)
@@ -74,6 +76,7 @@ async def get_first_messages(
             id=row["id"],
             data=row["data"],
             type=row["type"],
+            source_path=row["source_path"],
             created_at=row["created_at"],
         )
         for row in rows

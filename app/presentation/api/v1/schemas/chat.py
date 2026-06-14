@@ -8,4 +8,5 @@ class FirstMessageResponse(BaseModel):
     id: int
     data: Optional[str] = None
     type: str
+    source_path: Optional[str] = None
     created_at: datetime

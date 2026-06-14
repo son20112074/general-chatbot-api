@@ -32,6 +32,7 @@ class ChatMessage(Base):
     data = Column(Text, nullable=True)
     type = Column(Text, nullable=False)
     chat_type = Column(Text)  # e.g., "text", "image", "file"
+    source_path = Column(Text, nullable=True)
     connection_id = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

@@ -659,18 +659,18 @@ async def get_period_statistics(
                     detail=f"Invalid to_time format: {str(e)}"
                 )
         
-        # Lấy danh sách user IDs trong hierarchy
-        file_query_service = FileQueryService(session)
-        user_ids = await file_query_service.get_user_hierarchy_ids(current_user.user_id)
+        # Phân quyền: chỉ filter theo user hierarchy nếu không phải admin
+        base_conditions = []
+        if current_user.role_id != ADMIN_ROLE_ID:
+            file_query_service = FileQueryService(session)
+            user_ids = await file_query_service.get_user_hierarchy_ids(current_user.user_id)
+            base_conditions.append(File.created_by.in_(user_ids))
         
-        # Base query with user hierarchy filter
-        base_query = select(File).where(File.created_by.in_(user_ids))
-        
-        # Add time filters if provided
+        time_conditions = []
         if from_time:
-            base_query = base_query.where(File.created_at >= from_time)
+            time_conditions.append(File.created_at >= from_time)
         if to_time:
-            base_query = base_query.where(File.created_at <= to_time)
+            time_conditions.append(File.created_at <= to_time)
         
         # Build period grouping based on period type
         if request.period == 'day':
@@ -687,15 +687,14 @@ async def get_period_statistics(
             period_label = 'year'
         
         # Get period statistics
+        stats_query_conditions = base_conditions + time_conditions
         stats_query = await session.execute(
             select(
                 period_expr.label('period_date'),
                 func.count(File.id).label('file_count'),
                 func.coalesce(func.sum(File.size), 0).label('total_size')
             )
-            .where(File.created_by.in_(user_ids))
-            .where(from_time <= File.created_at if from_time else True)
-            .where(File.created_at <= to_time if to_time else True)
+            .where(*stats_query_conditions)
             .group_by(period_expr)
             .order_by(period_expr)
         )
@@ -735,14 +734,13 @@ async def get_period_statistics(
             })
         
         # Get files by extension for the period
+        extension_query_conditions = base_conditions + time_conditions
         extension_query = await session.execute(
             select(
                 File.extension,
                 func.count(File.id).label('count')
             )
-            .where(File.created_by.in_(user_ids))
-            .where(from_time <= File.created_at if from_time else True)
-            .where(File.created_at <= to_time if to_time else True)
+            .where(*extension_query_conditions)
             .group_by(File.extension)
             .order_by(func.count(File.id).desc())
         )
@@ -750,6 +748,7 @@ async def get_period_statistics(
         files_by_extension = {row.extension or 'unknown': row.count for row in extension_results}
         
         # Get files by status for the period
+        status_query_conditions = base_conditions + time_conditions
         status_query = await session.execute(
             select(
                 case(
@@ -759,9 +758,7 @@ async def get_period_statistics(
                 ).label('status'),
                 func.count(File.id).label('count')
             )
-            .where(File.created_by.in_(user_ids))
-            .where(from_time <= File.created_at if from_time else True)
-            .where(File.created_at <= to_time if to_time else True)
+            .where(*status_query_conditions)
             .group_by(File.is_processed)
         )
         status_results = status_query.all()
@@ -846,41 +843,35 @@ async def get_country_technology_statistics(
                 detail="sort_order must be 'asc' or 'desc'"
             )
         
-        # Lấy danh sách user IDs trong hierarchy
-        file_query_service = FileQueryService(session)
-        user_ids = await file_query_service.get_user_hierarchy_ids(current_user.user_id)
+        # Phân quyền: chỉ filter theo user hierarchy nếu không phải admin
+        base_conditions = []
+        if current_user.role_id != ADMIN_ROLE_ID:
+            file_query_service = FileQueryService(session)
+            user_ids = await file_query_service.get_user_hierarchy_ids(current_user.user_id)
+            base_conditions.append(File.created_by.in_(user_ids))
         
-        # Base query with user hierarchy filter
-        base_query = select(File).where(File.created_by.in_(user_ids))
-        
-        # Add time filters if provided
+        time_conditions = []
         if from_time:
-            base_query = base_query.where(File.created_at >= from_time)
+            time_conditions.append(File.created_at >= from_time)
         if to_time:
-            base_query = base_query.where(File.created_at <= to_time)
+            time_conditions.append(File.created_at <= to_time)
         
         # Get total files count
-        total_files_query = select(func.count(File.id)).where(File.created_by.in_(user_ids))
-        if from_time:
-            total_files_query = total_files_query.where(File.created_at >= from_time)
-        if to_time:
-            total_files_query = total_files_query.where(File.created_at <= to_time)
+        total_files_query_conditions = base_conditions + time_conditions
+        total_files_query = select(func.count(File.id)).where(*total_files_query_conditions)
         
         total_files_result = await session.execute(total_files_query)
         total_files = total_files_result.scalar() or 0
         
         # Get listed_nations statistics
+        nations_query_conditions = base_conditions + time_conditions + [
+            File.listed_nation.isnot(None),
+            func.array_length(File.listed_nation, 1) > 0,
+        ]
         nations_query = select(
             func.unnest(File.listed_nation).label('nation'),
             func.count(File.id).label('count')
-        ).where(File.created_by.in_(user_ids)) \
-         .where(File.listed_nation.isnot(None)) \
-         .where(func.array_length(File.listed_nation, 1) > 0)
-        
-        if from_time:
-            nations_query = nations_query.where(File.created_at >= from_time)
-        if to_time:
-            nations_query = nations_query.where(File.created_at <= to_time)
+        ).where(*nations_query_conditions)
             
         nations_query = nations_query.group_by(func.unnest(File.listed_nation)) \
          .order_by(
@@ -905,17 +896,14 @@ async def get_country_technology_statistics(
         ]
         
         # Get listed_technologies statistics
+        technologies_query_conditions = base_conditions + time_conditions + [
+            File.listed_technology.isnot(None),
+            func.array_length(File.listed_technology, 1) > 0,
+        ]
         technologies_query = select(
             func.unnest(File.listed_technology).label('technology'),
             func.count(File.id).label('count')
-        ).where(File.created_by.in_(user_ids)) \
-         .where(File.listed_technology.isnot(None)) \
-         .where(func.array_length(File.listed_technology, 1) > 0)
-        
-        if from_time:
-            technologies_query = technologies_query.where(File.created_at >= from_time)
-        if to_time:
-            technologies_query = technologies_query.where(File.created_at <= to_time)
+        ).where(*technologies_query_conditions)
             
         technologies_query = technologies_query.group_by(func.unnest(File.listed_technology)) \
          .order_by(
