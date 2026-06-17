@@ -607,8 +607,17 @@ JSON:"""
         if not markdown or not markdown.strip():
             return scaffold
 
-        parsed = self._parse_hierarchical_markdown(markdown)
+        parsed = self._unwrap_report_title_wrapper(
+            self._parse_hierarchical_markdown(markdown)
+        )
         self._fill_scaffold_from_parsed(scaffold, parsed)
+
+        if self._all_leaves_empty(scaffold):
+            flat_keys = self._flatten_tree_keys(tree)
+            flat_json = self._final_markdown_to_json_with_template(markdown, flat_keys)
+            if not self._all_leaves_empty(flat_json):
+                return flat_json
+
         return scaffold
 
     @staticmethod
@@ -620,13 +629,26 @@ JSON:"""
         root: Dict[str, Any] = {}
         # stack items: (depth, container_dict, key)
         stack: List[Tuple[int, Dict, str]] = []
-        buffer: List[str] = []
+        # paragraphs collected so far; current paragraph being built
+        paragraphs: List[str] = []
+        current: List[str] = []
+
+        def _end_paragraph() -> None:
+            if current:
+                para = re.sub(r"[ \t]+", " ", " ".join(current)).strip()
+                if para and para.lower() != "null":
+                    paragraphs.append(para)
+                current.clear()
 
         def _flush() -> None:
-            if not stack or not buffer:
+            nonlocal paragraphs
+            _end_paragraph()
+            if not stack or not paragraphs:
+                paragraphs = []
                 return
             _, container, key = stack[-1]
-            text = re.sub(r"\s+", " ", " ".join(buffer)).strip()
+            text = "\n\n".join(paragraphs).strip()
+            paragraphs = []
             if text and text.lower() != "null":
                 # Only fill if still an empty leaf (not yet populated by a child heading)
                 if container.get(key) == {} or container.get(key) is None:
@@ -635,11 +657,12 @@ JSON:"""
         for raw in markdown.splitlines():
             line = raw.strip()
             if not line:
+                # blank line marks a paragraph boundary
+                _end_paragraph()
                 continue
 
             if line.startswith("#"):
                 _flush()
-                buffer = []
 
                 depth = len(line) - len(line.lstrip("#"))
                 key = line.lstrip("#").strip()
@@ -663,10 +686,12 @@ JSON:"""
                 stack.append((depth, container, key))
                 continue
 
-            if line.startswith("- "):
+            if line.startswith("- ") or line.startswith("* "):
+                # bullet starts its own paragraph
+                _end_paragraph()
                 line = line[2:].strip()
             if line.lower() != "null":
-                buffer.append(line)
+                current.append(line)
 
         _flush()
         return root
@@ -679,6 +704,44 @@ JSON:"""
         key = re.sub(r"\s+", " ", key).strip()
         return key
 
+    @classmethod
+    def _unwrap_report_title_wrapper(cls, parsed: Dict[str, Any]) -> Dict[str, Any]:
+        """Promote section children when LLM wraps content under a synthetic report title."""
+        if len(parsed) != 1:
+            return parsed
+
+        only_key = next(iter(parsed))
+        only_val = parsed[only_key]
+        if not isinstance(only_val, dict) or not only_val:
+            return parsed
+
+        norm = cls._normalize_key(only_key)
+        if norm.startswith("báo cáo") or norm in {"tổng hợp", "báo cáo tổng hợp"}:
+            return only_val
+        return parsed
+
+    @classmethod
+    def _all_leaves_empty(cls, data: Dict[str, Any]) -> bool:
+        for value in data.values():
+            if isinstance(value, dict):
+                if not cls._all_leaves_empty(value):
+                    return False
+            elif isinstance(value, str) and value.strip():
+                return False
+            elif value is not None:
+                return False
+        return True
+
+    def _find_nested_parsed_value(self, parsed: Dict[str, Any], norm_key: str) -> Any:
+        for key, value in parsed.items():
+            if self._normalize_key(key) == norm_key:
+                return value
+            if isinstance(value, dict):
+                found = self._find_nested_parsed_value(value, norm_key)
+                if found is not None:
+                    return found
+        return None
+
     def _fill_scaffold_from_parsed(self, scaffold: Dict, parsed: Dict) -> None:
         parsed_norm_map = {
             self._normalize_key(k): k for k in parsed.keys()
@@ -686,18 +749,24 @@ JSON:"""
 
         for key in scaffold:
             norm_key = self._normalize_key(key)
-
-            if norm_key not in parsed_norm_map:
-                continue
-
-            parsed_key = parsed_norm_map[norm_key]
-            parsed_val = parsed[parsed_key]
             scaffold_val = scaffold[key]
+
+            parsed_key = parsed_norm_map.get(norm_key)
+            if parsed_key is not None:
+                parsed_val = parsed[parsed_key]
+            else:
+                parsed_val = self._find_nested_parsed_value(parsed, norm_key)
+
+            if parsed_val is None:
+                continue
 
             if isinstance(scaffold_val, dict) and isinstance(parsed_val, dict):
                 self._fill_scaffold_from_parsed(scaffold_val, parsed_val)
             elif scaffold_val is None:
-                scaffold[key] = parsed_val if parsed_val else None
+                if isinstance(parsed_val, str) and parsed_val.strip():
+                    scaffold[key] = parsed_val.strip()
+                elif parsed_val and not isinstance(parsed_val, dict):
+                    scaffold[key] = parsed_val
 
     # =========================
     # EXTRACT ONE FILE
@@ -824,19 +893,29 @@ JSON:"""
 
         result: Dict[str, Any] = {key: None for key in template_keys}
         current_section: Optional[str] = None
-        buffer: List[str] = []
+        paragraphs: List[str] = []
+        current: List[str] = []
+
+        def end_paragraph():
+            if current:
+                para = re.sub(r"[ \t]+", " ", " ".join(current)).strip()
+                if para:
+                    paragraphs.append(para)
+                current.clear()
 
         def flush():
-            nonlocal current_section, buffer
-            if current_section in result and buffer:
-                paragraph = re.sub(r"\s+", " ", " ".join(buffer)).strip()
-                if paragraph:
-                    result[current_section] = paragraph
-            buffer.clear()
+            nonlocal current_section, paragraphs
+            end_paragraph()
+            if current_section in result and paragraphs:
+                text = "\n\n".join(paragraphs).strip()
+                if text:
+                    result[current_section] = text
+            paragraphs = []
 
         for raw in markdown.splitlines():
             line = raw.strip()
             if not line:
+                end_paragraph()
                 continue
 
             if line.startswith("## "):
@@ -847,11 +926,12 @@ JSON:"""
             if line.startswith("#"):
                 continue
 
-            if line.startswith("- "):
+            if line.startswith("- ") or line.startswith("* "):
+                end_paragraph()
                 line = line[2:].strip()
 
             if current_section:
-                buffer.append(line)
+                current.append(line)
 
         flush()
         return result

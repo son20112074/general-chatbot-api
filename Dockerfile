@@ -52,6 +52,9 @@ WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
 
+# unstructured/langchain Excel parsing requires NLTK tokenizers (punkt_tab since NLTK 3.9+)
+RUN /opt/venv/bin/python -c "import nltk; nltk.download('punkt_tab'); nltk.download('punkt')"
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

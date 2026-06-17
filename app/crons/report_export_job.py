@@ -223,14 +223,51 @@ async def _get_files_for_template(
 
 # ── Docx generation ───────────────────────────────────────────────────────────
 
+def _split_into_paragraphs(text: str) -> List[str]:
+    """Split a section string into display paragraphs.
+
+    Blank lines separate paragraphs; bullet lines (``* ``/``- ``) become their
+    own paragraph with the marker stripped. Lines within the same paragraph are
+    joined with spaces.
+    """
+    paragraphs: List[str] = []
+    buffer: List[str] = []
+
+    def _flush() -> None:
+        if buffer:
+            joined = " ".join(p.strip() for p in buffer if p.strip()).strip()
+            if joined:
+                paragraphs.append(joined)
+            buffer.clear()
+
+    for raw in text.replace("\r\n", "\n").split("\n"):
+        line = raw.strip()
+        if not line:
+            _flush()
+            continue
+        if line[:2] in ("* ", "- ") or line in ("*", "-"):
+            _flush()
+            bullet = line[2:].strip() if line[:2] in ("* ", "- ") else ""
+            bullet = bullet.lstrip("*").strip()
+            if bullet:
+                paragraphs.append(bullet)
+            continue
+        buffer.append(line)
+
+    _flush()
+    return paragraphs
+
+
 def _write_json_section(doc: DocxDocument, data: Any, depth: int = 1) -> None:
     if isinstance(data, dict):
         for key, value in data.items():
             doc.add_heading(key, level=min(depth, 4))
             _write_json_section(doc, value, depth + 1)
     elif isinstance(data, str) and data.strip():
-        para = doc.add_paragraph(data.strip())
-        para.style.font.size = Pt(11)
+        for paragraph in _split_into_paragraphs(data):
+            para = doc.add_paragraph()
+            run = para.add_run(paragraph)
+            run.font.size = Pt(11)
 
 
 def _build_docx(template_name: str, final_json: Dict[str, Any]) -> bytes:

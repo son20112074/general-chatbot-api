@@ -12,6 +12,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_NLTK_INITIALIZED = False
+
+
+def _ensure_nltk_data() -> None:
+    """Download NLTK tokenizers required by unstructured Excel parsing."""
+    global _NLTK_INITIALIZED
+    if _NLTK_INITIALIZED:
+        return
+    import nltk
+
+    for resource in ("punkt_tab", "punkt"):
+        try:
+            nltk.data.find(f"tokenizers/{resource}")
+        except LookupError:
+            logger.info(f"Downloading NLTK resource: {resource}")
+            nltk.download(resource, quiet=True)
+    _NLTK_INITIALIZED = True
+
 
 class ExcelParser:
     """Parser for Excel files using langchain_community UnstructuredExcelLoader."""
@@ -67,6 +85,7 @@ class ExcelParser:
             
             # Check if required dependencies are available
             self._check_dependencies()
+            _ensure_nltk_data()
             
             # Use UnstructuredExcelLoader with specified mode
             loader = UnstructuredExcelLoader(str(file_path), mode=mode)
