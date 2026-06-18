@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from pypdf import PdfReader
 
+from app.core.config import settings
 from app.infrastructure.services.oss_service import OpenRouterClient
 from app.presentation.api.v1.endpoints.internal.files import (
     extract_csv_content,
@@ -19,6 +20,20 @@ from app.presentation.api.v1.endpoints.internal.files import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ── Token budgeting ───────────────────────────────────────────────────────────
+# Bound the INPUT length of every per-chunk LLM call so it stays under the model
+# context window. We do NOT set a fixed output size on the server (see
+# oss_service); it allocates the remaining context for output.
+MODEL_MAX_TOKENS = getattr(settings, "LLM_MODEL_MAX_TOKENS", 32768)
+OUTPUT_RESERVE_TOKENS = getattr(settings, "LLM_MAX_OUTPUT_TOKENS", 4096)
+SAFETY_MARGIN_TOKENS = 1500
+MAX_INPUT_TOKENS = max(
+    1024, MODEL_MAX_TOKENS - OUTPUT_RESERVE_TOKENS - SAFETY_MARGIN_TOKENS
+)
+# Conservative chars-per-token (measured ~2.84 on this tokenizer for VI/EN; CJK is
+# denser, so character-based chunking below stays safely under the token budget).
+CHARS_PER_TOKEN = 2.5
 
 
 @dataclass
@@ -82,7 +97,10 @@ class TemplateExtractionService:
 
         started = time.perf_counter()
 
-        chunks = self._split_text(source_text)
+        # Account for the fixed prompt wrapper + extraction_prompt so each chunk's
+        # full prompt stays within the model input budget.
+        prompt_overhead_tokens = self._estimate_tokens(self._build_prompt(extraction_prompt, ""))
+        chunks = self._split_text(source_text, prompt_overhead_tokens)
 
         queue: asyncio.Queue = asyncio.Queue()
         results: List[Optional[ChunkExtractionResult]] = [None] * len(chunks)
@@ -338,14 +356,52 @@ class TemplateExtractionService:
     def _is_usable_markdown(content: str) -> bool:
         return bool(content and "##" in content)
 
-    def _split_text(self, text: str) -> List[TextChunk]:
-        words = text.split()
-        chunks = []
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        if not text:
+            return 0
+        return int(len(text) / CHARS_PER_TOKEN) + 1
 
-        for i in range(0, len(words), self.target_chunk_tokens):
-            part = " ".join(words[i : i + self.target_chunk_tokens])
-            chunks.append(TextChunk(len(chunks), part, len(part)))
+    def _split_text(self, text: str, prompt_overhead_tokens: int = 0) -> List[TextChunk]:
+        """Split text into chunks bounded by a CHARACTER budget.
 
+        Whitespace-based splitting (``text.split()``) breaks for CJK / space-less
+        text because a single "word" can be the entire document, producing chunks
+        that overflow the model context. Splitting by characters is robust for any
+        script. Each chunk is also kept under the input-token budget (minus the
+        fixed prompt overhead) so the per-chunk prompt always fits the window.
+        """
+        if not text:
+            return []
+
+        # Desired chunk size (small, for extraction quality), capped so that
+        # chunk + prompt overhead never exceeds the model input budget.
+        desired_chars = int(self.target_chunk_tokens * CHARS_PER_TOKEN)
+        safe_chars = int(max(256, MAX_INPUT_TOKENS - prompt_overhead_tokens) * CHARS_PER_TOKEN)
+        max_chars = max(256, min(desired_chars, safe_chars))
+
+        chunks: List[TextChunk] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            end = min(i + max_chars, n)
+            if end < n:
+                window = text[i:end]
+                brk = max(window.rfind("\n"), window.rfind(" "))
+                if brk > max_chars // 2:
+                    end = i + brk
+            part = text[i:end].strip()
+            if part:
+                chunks.append(TextChunk(len(chunks), part, self._estimate_tokens(part)))
+            i = end if end > i else i + max_chars
+
+        logger.info(
+            "extract:_split_text chars=%s max_chars=%s overhead_tokens=%s chunks=%s",
+            n,
+            max_chars,
+            prompt_overhead_tokens,
+            len(chunks),
+        )
         return chunks
 
     def _load_document_text(self, file_path: str) -> str:

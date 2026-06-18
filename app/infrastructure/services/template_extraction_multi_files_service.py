@@ -137,7 +137,7 @@ class TemplateExtractionMultiFilesService:
         )
 
         file_count = len(file_paths)
-        min_paragraphs = max(3, 3 * file_count)
+        min_paragraphs = min(6, max(3, 3 * file_count))
 
         llm_cluster_started = time.perf_counter()
         llm_clustered_markdown = await self._cluster_markdown_via_llm(

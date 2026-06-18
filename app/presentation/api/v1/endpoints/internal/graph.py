@@ -39,6 +39,9 @@ ADMIN_ROLE_ID = settings.ADMIN_ROLE_ID
 DEFAULT_LIMIT = 5000
 MAX_LIMIT = 20000
 
+# asyncpg rejects queries with more than 32767 bind parameters.
+IN_QUERY_BATCH_SIZE = 10000
+
 
 # =============================================================================
 # Helper Functions
@@ -116,6 +119,104 @@ async def _get_user_accessible_node_ids(
     return {n.id for n in connected_nodes}
 
 
+def _iter_id_batches(ids: set, batch_size: int = IN_QUERY_BATCH_SIZE):
+    id_list = list(ids)
+    for i in range(0, len(id_list), batch_size):
+        yield id_list[i : i + batch_size]
+
+
+async def _fetch_nodes_by_ids(
+    db: AsyncSession,
+    node_ids: set,
+    *,
+    entity_types: Optional[List[str]] = None,
+    created_after: Optional[datetime] = None,
+    created_before: Optional[datetime] = None,
+    search: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> List[Node]:
+    if not node_ids:
+        return []
+
+    nodes: List[Node] = []
+    remaining = limit
+    for batch in _iter_id_batches(node_ids):
+        query = select(Node).where(Node.id.in_(batch))
+        query = _apply_node_filters(
+            query, entity_types, created_after, created_before, search
+        )
+        if remaining is not None:
+            query = query.limit(remaining)
+        batch_nodes = (await db.execute(query)).scalars().all()
+        nodes.extend(batch_nodes)
+        if remaining is not None:
+            remaining -= len(batch_nodes)
+            if remaining <= 0:
+                break
+    return nodes
+
+
+async def _fetch_edges_touching_any(
+    db: AsyncSession,
+    node_ids: set,
+    *,
+    edge_types: Optional[List[str]] = None,
+) -> List[Edge]:
+    if not node_ids:
+        return []
+
+    edges_by_id: dict = {}
+    for batch in _iter_id_batches(node_ids):
+        query = select(Edge).where(
+            or_(
+                Edge.source_node_id.in_(batch),
+                Edge.target_node_id.in_(batch),
+            )
+        )
+        if edge_types:
+            query = query.where(Edge.edge_type.in_(edge_types))
+        for edge in (await db.execute(query)).scalars().all():
+            edges_by_id[edge.id] = edge
+    return list(edges_by_id.values())
+
+
+async def _fetch_edges_fully_inside(
+    db: AsyncSession,
+    node_ids: set,
+    *,
+    edge_types: Optional[List[str]] = None,
+    touching_any_of: Optional[set] = None,
+) -> List[Edge]:
+    """Return edges whose source and target are both in node_ids."""
+    if not node_ids:
+        return []
+
+    node_id_set = set(node_ids)
+    edges_by_id: dict = {}
+
+    def _keep(edge: Edge) -> bool:
+        if edge.source_node_id not in node_id_set:
+            return False
+        if edge.target_node_id not in node_id_set:
+            return False
+        if touching_any_of is not None and not (
+            edge.source_node_id in touching_any_of
+            or edge.target_node_id in touching_any_of
+        ):
+            return False
+        return True
+
+    for batch in _iter_id_batches(node_ids):
+        for endpoint in (Edge.source_node_id, Edge.target_node_id):
+            query = select(Edge).where(endpoint.in_(batch))
+            if edge_types:
+                query = query.where(Edge.edge_type.in_(edge_types))
+            for edge in (await db.execute(query)).scalars().all():
+                if _keep(edge):
+                    edges_by_id[edge.id] = edge
+    return list(edges_by_id.values())
+
+
 def _apply_node_filters(
     query,
     entity_types: Optional[List[str]] = None,
@@ -152,24 +253,26 @@ async def _get_filtered_nodes_and_edges(
     limit: int = DEFAULT_LIMIT,
 ):
     """Get filtered nodes and edges."""
-    # Build base node query
-    node_query = select(Node)
-
-    # Apply access control
     if accessible_node_ids is not None:
         if not accessible_node_ids:
-            return [], []  # No access
-        node_query = node_query.where(Node.id.in_(accessible_node_ids))
+            return [], []
+        matched_nodes = await _fetch_nodes_by_ids(
+            db,
+            accessible_node_ids,
+            entity_types=entity_types,
+            created_after=created_after,
+            created_before=created_before,
+            search=search,
+            limit=limit,
+        )
+    else:
+        node_query = select(Node)
+        node_query = _apply_node_filters(
+            node_query, entity_types, created_after, created_before, search
+        )
+        node_query = node_query.limit(limit)
+        matched_nodes = (await db.execute(node_query)).scalars().all()
 
-    # Apply filters
-    node_query = _apply_node_filters(
-        node_query, entity_types, created_after, created_before, search
-    )
-
-    # Apply limit
-    node_query = node_query.limit(limit)
-
-    matched_nodes = (await db.execute(node_query)).scalars().all()
     matched_node_ids = {n.id for n in matched_nodes}
 
     if not matched_node_ids:
@@ -178,14 +281,7 @@ async def _get_filtered_nodes_and_edges(
     # Include related nodes (1-hop neighbors) if requested
     visible_node_ids = set(matched_node_ids)
     if include_related and matched_node_ids:
-        # Find neighbor node IDs
-        neighbor_query = select(Edge).where(
-            or_(
-                Edge.source_node_id.in_(matched_node_ids),
-                Edge.target_node_id.in_(matched_node_ids),
-            )
-        )
-        neighbor_edges = (await db.execute(neighbor_query)).scalars().all()
+        neighbor_edges = await _fetch_edges_touching_any(db, matched_node_ids)
 
         for e in neighbor_edges:
             if e.source_node_id in matched_node_ids:
@@ -194,40 +290,25 @@ async def _get_filtered_nodes_and_edges(
                 visible_node_ids.add(e.source_node_id)
 
         # Re-fetch nodes with expanded IDs (respecting access control and entity type filters)
-        expanded_query = select(Node).where(Node.id.in_(visible_node_ids))
+        fetch_node_ids = visible_node_ids
         if accessible_node_ids is not None:
-            expanded_query = expanded_query.where(Node.id.in_(accessible_node_ids))
-        # Apply entity_type filter to neighbor nodes as well
-        # reference: https://www.notion.so/Update-i-u-ki-n-l-y-graph-node-theo-filtering-3771b823fe018033a352ff1dd053f3d1?v=3311b823fe018019a4bf000c82043f4f&source=copy_link
-        if entity_types:
-            expanded_query = expanded_query.where(Node.entity_type.in_(entity_types))
-        nodes = (await db.execute(expanded_query)).scalars().all()
+            fetch_node_ids = visible_node_ids & accessible_node_ids
+        nodes = await _fetch_nodes_by_ids(
+            db,
+            fetch_node_ids,
+            entity_types=entity_types,
+        )
         visible_node_ids = {n.id for n in nodes}
     else:
         nodes = matched_nodes
 
-    # Get edges connecting visible nodes
-    edge_query = select(Edge).where(
-        and_(
-            Edge.source_node_id.in_(visible_node_ids),
-            Edge.target_node_id.in_(visible_node_ids),
-        )
+    touching_matched = matched_node_ids if include_related and matched_node_ids else None
+    edges = await _fetch_edges_fully_inside(
+        db,
+        visible_node_ids,
+        edge_types=edge_types,
+        touching_any_of=touching_matched,
     )
-
-    # Filter by edge types if specified
-    if edge_types:
-        edge_query = edge_query.where(Edge.edge_type.in_(edge_types))
-
-    # When include_related, only keep edges touching at least one matched node
-    if include_related and matched_node_ids:
-        edge_query = edge_query.where(
-            or_(
-                Edge.source_node_id.in_(matched_node_ids),
-                Edge.target_node_id.in_(matched_node_ids),
-            )
-        )
-
-    edges = (await db.execute(edge_query)).scalars().all()
 
     return nodes, edges
 
@@ -250,74 +331,114 @@ async def get_graph_summary(
     """Get summary statistics for the knowledge graph."""
     accessible_node_ids = await _get_user_accessible_node_ids(db, current_user)
 
-    # Build base queries with access control
-    node_base = select(Node)
-    edge_base = select(Edge)
-
-    if accessible_node_ids is not None:
-        if not accessible_node_ids:
-            return GraphSummaryResponse(
-                success=True,
-                data=GraphSummary(
-                    node_count=0,
-                    edge_count=0,
-                    entity_type_counts=[],
-                    edge_type_counts=[],
-                    date_range=DateRange(min_date=None, max_date=None),
-                ),
-            )
-        node_base = node_base.where(Node.id.in_(accessible_node_ids))
-        edge_base = edge_base.where(
-            and_(
-                Edge.source_node_id.in_(accessible_node_ids),
-                Edge.target_node_id.in_(accessible_node_ids),
-            )
+    if accessible_node_ids is not None and not accessible_node_ids:
+        return GraphSummaryResponse(
+            success=True,
+            data=GraphSummary(
+                node_count=0,
+                edge_count=0,
+                entity_type_counts=[],
+                edge_type_counts=[],
+                date_range=DateRange(min_date=None, max_date=None),
+            ),
         )
 
-    # Total counts
-    node_count = (
-        await db.execute(select(func.count()).select_from(node_base.subquery()))
-    ).scalar() or 0
-    edge_count = (
-        await db.execute(select(func.count()).select_from(edge_base.subquery()))
-    ).scalar() or 0
+    if accessible_node_ids is None:
+        node_count = (
+            await db.execute(select(func.count(Node.id)))
+        ).scalar() or 0
+        edge_count = (
+            await db.execute(select(func.count(Edge.id)))
+        ).scalar() or 0
+        entity_type_results = (
+            await db.execute(
+                select(Node.entity_type, func.count(Node.id).label("count"))
+                .group_by(Node.entity_type)
+                .order_by(func.count(Node.id).desc())
+            )
+        ).all()
+        edge_type_results = (
+            await db.execute(
+                select(Edge.edge_type, func.count(Edge.id).label("count"))
+                .group_by(Edge.edge_type)
+                .order_by(func.count(Edge.id).desc())
+            )
+        ).all()
+        date_result = (
+            await db.execute(select(func.min(Node.created_at), func.max(Node.created_at)))
+        ).first()
+    else:
+        node_count = 0
+        edge_count = 0
+        entity_type_counts_map: dict = {}
+        edge_type_counts_map: dict = {}
+        min_date = max_date = None
 
-    # Entity type counts
-    entity_type_query = (
-        select(Node.entity_type, func.count(Node.id).label("count"))
-        .group_by(Node.entity_type)
-        .order_by(func.count(Node.id).desc())
-    )
-    if accessible_node_ids is not None:
-        entity_type_query = entity_type_query.where(Node.id.in_(accessible_node_ids))
-    entity_type_results = (await db.execute(entity_type_query)).all()
+        for batch in _iter_id_batches(accessible_node_ids):
+            node_count += (
+                await db.execute(
+                    select(func.count(Node.id)).where(Node.id.in_(batch))
+                )
+            ).scalar() or 0
+
+            for entity_type, count in (
+                await db.execute(
+                    select(Node.entity_type, func.count(Node.id).label("count"))
+                    .where(Node.id.in_(batch))
+                    .group_by(Node.entity_type)
+                )
+            ).all():
+                entity_type_counts_map[entity_type] = (
+                    entity_type_counts_map.get(entity_type, 0) + count
+                )
+
+            batch_min, batch_max = (
+                await db.execute(
+                    select(func.min(Node.created_at), func.max(Node.created_at)).where(
+                        Node.id.in_(batch)
+                    )
+                )
+            ).first()
+            if batch_min is not None:
+                min_date = batch_min if min_date is None else min(min_date, batch_min)
+            if batch_max is not None:
+                max_date = batch_max if max_date is None else max(max_date, batch_max)
+
+        edges_by_id: dict = {}
+        for batch in _iter_id_batches(accessible_node_ids):
+            for endpoint in (Edge.source_node_id, Edge.target_node_id):
+                for edge in (
+                    await db.execute(select(Edge).where(endpoint.in_(batch)))
+                ).scalars().all():
+                    if (
+                        edge.source_node_id in accessible_node_ids
+                        and edge.target_node_id in accessible_node_ids
+                    ):
+                        edges_by_id[edge.id] = edge
+        edge_count = len(edges_by_id)
+        for edge in edges_by_id.values():
+            edge_type_counts_map[edge.edge_type] = (
+                edge_type_counts_map.get(edge.edge_type, 0) + 1
+            )
+
+        entity_type_results = sorted(
+            entity_type_counts_map.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        edge_type_results = sorted(
+            edge_type_counts_map.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        date_result = (min_date, max_date)
+
     entity_type_counts = [
         TypeCount(type=row[0], count=row[1]) for row in entity_type_results
     ]
-
-    # Edge type counts
-    edge_type_query = (
-        select(Edge.edge_type, func.count(Edge.id).label("count"))
-        .group_by(Edge.edge_type)
-        .order_by(func.count(Edge.id).desc())
-    )
-    if accessible_node_ids is not None:
-        edge_type_query = edge_type_query.where(
-            and_(
-                Edge.source_node_id.in_(accessible_node_ids),
-                Edge.target_node_id.in_(accessible_node_ids),
-            )
-        )
-    edge_type_results = (await db.execute(edge_type_query)).all()
     edge_type_counts = [
         TypeCount(type=row[0], count=row[1]) for row in edge_type_results
     ]
-
-    # Date range
-    date_query = select(func.min(Node.created_at), func.max(Node.created_at))
-    if accessible_node_ids is not None:
-        date_query = date_query.where(Node.id.in_(accessible_node_ids))
-    date_result = (await db.execute(date_query)).first()
     min_date = date_result[0].isoformat() if date_result and date_result[0] else None
     max_date = date_result[1].isoformat() if date_result and date_result[1] else None
 
@@ -449,11 +570,7 @@ async def get_node_detail(
     # Fetch connected nodes
     connected_nodes_map = {}
     if connected_node_ids:
-        connected_nodes = (
-            (await db.execute(select(Node).where(Node.id.in_(connected_node_ids))))
-            .scalars()
-            .all()
-        )
+        connected_nodes = await _fetch_nodes_by_ids(db, connected_node_ids)
         connected_nodes_map = {n.id: n for n in connected_nodes}
 
     # Build connected edges response
