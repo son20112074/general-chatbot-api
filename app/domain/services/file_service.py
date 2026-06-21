@@ -312,6 +312,9 @@ class FileQueryService:
         # Build base query
         query = self._build_base_query(table, query_input, current_user_id)
 
+        if "is_deleted" in table.c:
+            query = query.where(or_(table.c.is_deleted == False, table.c.is_deleted == None))
+
         # Add user hierarchy filter if include_children is True and current_user_id is provided
         if current_user_id is not None:
             user_ids = await self.get_user_hierarchy_ids(current_user_id)

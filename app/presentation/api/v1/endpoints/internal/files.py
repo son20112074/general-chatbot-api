@@ -505,7 +505,7 @@ async def get_file_dashboard(
         from app.domain.models import File
         
         # Phân quyền: chỉ filter theo user hierarchy nếu không phải admin
-        base_conditions = []
+        base_conditions = [or_(File.is_deleted == False, File.is_deleted == None)]
         if current_user.role_id != ADMIN_ROLE_ID:
             file_query_service = FileQueryService(session)
             user_ids = await file_query_service.get_user_hierarchy_ids(current_user.user_id)
@@ -660,7 +660,7 @@ async def get_period_statistics(
                 )
         
         # Phân quyền: chỉ filter theo user hierarchy nếu không phải admin
-        base_conditions = []
+        base_conditions = [or_(File.is_deleted == False, File.is_deleted == None)]
         if current_user.role_id != ADMIN_ROLE_ID:
             file_query_service = FileQueryService(session)
             user_ids = await file_query_service.get_user_hierarchy_ids(current_user.user_id)
@@ -844,7 +844,7 @@ async def get_country_technology_statistics(
             )
         
         # Phân quyền: chỉ filter theo user hierarchy nếu không phải admin
-        base_conditions = []
+        base_conditions = [or_(File.is_deleted == False, File.is_deleted == None)]
         if current_user.role_id != ADMIN_ROLE_ID:
             file_query_service = FileQueryService(session)
             user_ids = await file_query_service.get_user_hierarchy_ids(current_user.user_id)
