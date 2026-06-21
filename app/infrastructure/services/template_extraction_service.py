@@ -219,11 +219,9 @@ class TemplateExtractionService:
     async def _call_llm(self, prompt: str, timeout: float = 25) -> str:
         try:
             async with self._semaphore:
-                message = await asyncio.wait_for(
-                    self._llm_client.ainvoke(prompt),
-                    timeout=timeout,
-                )
+                message = await self._llm_client.ainvoke(prompt, timeout=timeout)
         except Exception:
+            logger.exception("extract:llm_call_failed timeout=%s", timeout)
             return ""
 
         content = getattr(message, "content", "")

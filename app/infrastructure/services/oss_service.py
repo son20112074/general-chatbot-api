@@ -1,11 +1,12 @@
 import os
+import re
 import httpx
 import asyncio
 from typing import Optional
 import json
 from langchain_core.messages import AIMessage
 from app.core.config import settings
-    
+
 
 class OpenRouterClient:
     def __init__(self):
@@ -14,17 +15,24 @@ class OpenRouterClient:
         self.model = settings.LLM_MODEL
         self.api_key = settings.OPENAI_API_KEY
 
-    async def ainvoke(self, prompt: str):
-        return await self.safe_generate(prompt)
+    async def ainvoke(self, prompt: str, timeout: Optional[float] = None):
+        return await self.safe_generate(prompt, timeout=timeout)
 
     # -------------------------
     # SAFETY WRAPPER
     # -------------------------
-    async def safe_generate(self, prompt: str) -> AIMessage:
+    async def safe_generate(
+        self, prompt: str, timeout: Optional[float] = None
+    ) -> AIMessage:
+        deadline = timeout if timeout is not None else 25.0
+        http_timeout = deadline + 10.0
         try:
-            return await asyncio.wait_for(self.generate(prompt), timeout=25)
+            return await asyncio.wait_for(
+                self.generate(prompt, http_timeout=http_timeout),
+                timeout=deadline,
+            )
         except asyncio.TimeoutError:
-            print("⏱ Timeout → fallback")
+            print(f"⏱ Timeout after {deadline}s → fallback")
             return AIMessage(content="Hệ thống đang bận, vui lòng thử lại.")
         except Exception as e:
             print("💥 Error:", e)
@@ -66,7 +74,7 @@ class OpenRouterClient:
     # -------------------------
     # MAIN GENERATE
     # -------------------------
-    async def generate(self, prompt: str) -> AIMessage:
+    async def generate(self, prompt: str, http_timeout: float = 30.0) -> AIMessage:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -90,7 +98,7 @@ class OpenRouterClient:
                 f"{self.api_base}",
                 headers=headers,
                 json=payload,
-                timeout=30.0
+                timeout=http_timeout
             )
 
         if response.status_code != 200:

@@ -89,8 +89,6 @@ async def _call_llm(
         "temperature": 0,
     }
     api_url = f"{str(settings.LLM_API).rstrip('/')}"
-    print("---- API URL ----")
-    print(api_url)
     
     max_retries = max(0, int(settings.TOPIC_CLASSIFY_LLM_RATE_LIMIT_RETRIES))
     max_sleep = max(0, int(settings.TOPIC_CLASSIFY_LLM_RATE_LIMIT_MAX_SLEEP_SECONDS))
