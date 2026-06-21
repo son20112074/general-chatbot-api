@@ -41,6 +41,25 @@ class TemplateExtractionMultiFilesService:
     MAX_REPORT_CHARS = 30000
     LLM_TIMEOUT_SECONDS = 90
 
+    _SECTION_ARRAY_JSON_FORMAT = """## ĐỊNH DẠNG JSON BẮT BUỘC
+Trả về MỘT object JSON (dict), KHÔNG phải mảng [] bọc ngoài.
+Mỗi key = tên section CHÍNH XÁC, value = mảng các đoạn văn (string).
+
+Ví dụ:
+{
+  "I. Tình hình chung": [
+    "Đoạn văn 1 với nội dung chi tiết từ tài liệu.",
+    "Đoạn văn 2 với nội dung chi tiết từ tài liệu."
+  ],
+  "II. Kết quả thực hiện": []
+}
+
+SAI — không dùng dạng mảng object:
+[
+  {"I. Tình hình chung": ["Đoạn văn 1...", "Đoạn văn 2..."]},
+  {"II. Kết quả thực hiện": []}
+]"""
+
     def __init__(
         self,
         extraction_service: Optional[TemplateExtractionService] = None,
@@ -1022,14 +1041,39 @@ JSON:"""
             pass
         return None
 
-    async def _call_llm_json(self, prompt: str, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    def _json_parse_failure_reason(self, raw: str) -> str:
+        if not raw or not raw.strip():
+            return "LLM trả về response rỗng"
+        cleaned = self._strip_json_fences(raw)
+        try:
+            parsed = json.loads(cleaned)
+            if not isinstance(parsed, dict):
+                return f"JSON không phải object (type={type(parsed).__name__})"
+        except (json.JSONDecodeError, ValueError) as exc:
+            return f"JSON parse error: {exc}"
+        return "không parse được JSON"
+
+    async def _call_llm_json(
+        self, prompt: str, timeout: Optional[float] = None
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         timeout = timeout if timeout is not None else self.LLM_TIMEOUT_SECONDS
-        for _ in range(2):
+        try:
             raw = await self._extraction_service._call_llm(prompt, timeout=timeout)
             parsed = self._parse_json_dict(raw)
             if parsed is not None:
-                return parsed
-        return None
+                return parsed, None
+            last_error = self._json_parse_failure_reason(raw)
+            last_raw = raw or ""
+        except Exception as exc:
+            last_error = f"LLM call error: {exc}"
+            last_raw = ""
+            logger.exception("section_extract:llm_json_error")
+
+        reason = f"{last_error} (raw_len={len(last_raw)})"
+        if last_raw:
+            preview = last_raw[:500].replace("\n", "\\n")
+            reason += f", raw_preview={preview!r}"
+        return None, reason
 
     async def _build_section_plan(self, description: str) -> Dict[str, str]:
         desc = (description or "").strip()
@@ -1052,7 +1096,7 @@ Từ mô tả template báo cáo bên dưới, tạo JSON object mô tả các s
 
 JSON:"""
 
-        result = await self._call_llm_json(prompt)
+        result, err = await self._call_llm_json(prompt)
         if result:
             plan: Dict[str, str] = {}
             for key, value in result.items():
@@ -1153,14 +1197,16 @@ JSON:"""
 - Viết bằng tiếng Việt
 - Không bọc trong markdown code fence
 
+{self._SECTION_ARRAY_JSON_FORMAT}
+
 ## INPUT TEXT
 {chunk}
 
 JSON:"""
 
-        parsed = await self._call_llm_json(prompt)
+        parsed, err = await self._call_llm_json(prompt)
         if not parsed:
-            logger.warning("section_extract:chunk_parse_failed")
+            logger.warning("section_extract:chunk_parse_failed reason=%s", err)
             return self._empty_chunk_result(section_plan)
 
         return self._normalize_chunk_extraction(parsed, section_plan)
@@ -1209,6 +1255,9 @@ Gộp BÁO CÁO HIỆN TẠI với DỮ LIỆU MỚI từ chunk tài liệu thà
 - Không bọc trong markdown code fence
 - Nếu trong báo có có section kết luận, tổng kết, đánh giá, kiến nghị, thì tổng hợp lại nội dung từ các section khác
 - Nếu section quá dài, tổng độ dài toàn bộ báo cáo quá {self.MAX_REPORT_CHARS} ký tự; thì tóm tắt gộp các ý của section sao cho ko vượt quá giới hạn, nhưng vẫn chi tiết nhất có thể
+
+{self._SECTION_ARRAY_JSON_FORMAT}
+
 JSON:"""
 
     def _build_merge_two_reports_prompt(
@@ -1242,6 +1291,9 @@ Gộp hai báo cáo từ các tài liệu khác nhau thành một báo cáo th�
 - Section không có thông tin → []
 - Không bọc trong markdown code fence
 - Nếu trong báo có có section kết luận, tổng kết, đánh giá, kiến nghị, thì tổng hợp lại nội dung từ các section khác
+
+{self._SECTION_ARRAY_JSON_FORMAT}
+
 JSON:"""
 
     def _normalize_merged_report(
@@ -1285,13 +1337,17 @@ JSON:"""
         step_label: str = "merge_chunk",
     ) -> Dict[str, List[str]]:
         prompt = self._build_merge_prompt(current, new_data, section_plan)
-        parsed = await self._call_llm_json(prompt)
+        parsed, err = await self._call_llm_json(prompt)
         if parsed:
             merged = self._normalize_merged_report(parsed, section_plan)
             return merged
 
-        logger.warning("section_extract:merge_chunk_failed keeping_current")
-        print(f"[SectionExtract] {step_label} — merge failed, giữ báo cáo hiện tại")
+        logger.warning(
+            "section_extract:merge_chunk_failed reason=%s keeping_current step=%s",
+            err,
+            step_label,
+        )
+        print(f"[SectionExtract] {step_label} — merge failed: {err}, giữ báo cáo hiện tại")
         return current
 
     async def _merge_two_reports(
@@ -1302,14 +1358,18 @@ JSON:"""
         step_label: str = "merge_file",
     ) -> Dict[str, List[str]]:
         prompt = self._build_merge_two_reports_prompt(current, other, section_plan)
-        parsed = await self._call_llm_json(prompt)
+        parsed, err = await self._call_llm_json(prompt)
         if parsed:
             merged = self._normalize_merged_report(parsed, section_plan)
             self._print_json_step(f"{step_label} — BÁO CÁO SAU GỘP", merged)
             return merged
 
-        logger.warning("section_extract:merge_file_failed keeping_current")
-        print(f"[SectionExtract] {step_label} — merge failed, giữ báo cáo hiện tại")
+        logger.warning(
+            "section_extract:merge_file_failed reason=%s keeping_current step=%s",
+            err,
+            step_label,
+        )
+        print(f"[SectionExtract] {step_label} — merge failed: {err}, giữ báo cáo hiện tại")
         return current
 
     async def _process_one_content(
