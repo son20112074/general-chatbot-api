@@ -405,7 +405,7 @@ class FileProcessingJob:
                 - Có thể chọn nhiều phòng ban nếu nội dung liên quan chéo.
                 - Không dùng markdown, không giải thích thêm, không thêm trường JSON khác.
             """
-            logger.info(f"System prompt: {system_prompt}")
+            # logger.info(f"System prompt: {system_prompt}")
             payload = {
                 "model": self.summary_service.model,
                 "messages": [

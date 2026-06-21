@@ -1,6 +1,5 @@
 import calendar
 import os
-import shutil
 import tempfile
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -324,20 +323,6 @@ async def _process_template(
     template_id = template.id
     template_name = template.name
 
-    extraction_prompt = f"""
-## TASK
-Extract information from INPUT TEXT into structured Markdown following the template outline.
-
-## TEMPLATE OUTLINE
-{template.description or template_name}
-
-## INSTRUCTIONS
-- Map content to the most relevant section based on meaning
-- Keep each section concise
-- Do not hallucinate
-- Vietnamese only
-""".strip()
-
     report = Report(
         name=f"{template_name} - {datetime.now().strftime('%d/%m/%Y')}",
         template_id=template_id,
@@ -372,23 +357,19 @@ Extract information from INPUT TEXT into structured Markdown following the templ
 
     await _set_docs_status(session, report.id, ReportDocumentStatus.PROCESSING)
 
-    tmp_dir = tempfile.mkdtemp(prefix="report_export_")
-    file_path_map: Dict[str, int] = {}
+    file_name_map: Dict[str, int] = {f.name: f.id for f in files}
 
     try:
+        items = [(f.name, f.content or "") for f in files if (f.content or "").strip()]
         for f in files:
-            txt_path = os.path.join(tmp_dir, f"{f.id}_{Path(f.name).stem}.txt")
             text_content = f.content or ""
             msg = f"[ReportExport] file id={f.id} name={f.name} content={len(text_content)} chars"
             logger.info(msg)
             print(msg)
-            Path(txt_path).write_text(text_content, encoding="utf-8")
-            file_path_map[txt_path] = f.id
 
         service = TemplateExtractionMultiFilesService()
-        result = await service.extract_documents(
-            file_paths=list(file_path_map.keys()),
-            extraction_prompt=extraction_prompt,
+        result = await service.extract_from_contents(
+            items=items,
             report_template=template.description or "",
         )
         msg = f"[ReportExport] Extraction result — processed={result.processed_files} failed={result.failed_files} warnings={result.warnings}"
@@ -408,12 +389,10 @@ Extract information from INPUT TEXT into structured Markdown following the templ
         )
         await session.commit()
         return
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    failed_paths: Set[str] = {w.split(":")[0].strip() for w in result.warnings}
+    failed_names: Set[str] = {w.split(":")[0].strip() for w in result.warnings}
     failed_file_ids: Set[int] = {
-        fid for path, fid in file_path_map.items() if path in failed_paths
+        file_name_map[name] for name in failed_names if name in file_name_map
     }
 
     for f in files:

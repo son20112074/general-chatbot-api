@@ -37,6 +37,10 @@ class MultiFileExtractionReport:
 
 
 class TemplateExtractionMultiFilesService:
+    CHUNK_SIZE_CHARS = 15000
+    MAX_REPORT_CHARS = 30000
+    LLM_TIMEOUT_SECONDS = 90
+
     def __init__(
         self,
         extraction_service: Optional[TemplateExtractionService] = None,
@@ -995,3 +999,468 @@ JSON:"""
             return "Thông tin liên quan"
         words = fact.split()
         return " ".join(words[:12]).strip() or "Thông tin liên quan"
+
+    # =========================
+    # SECTION-BASED EXTRACTION (large files / report run)
+    # =========================
+
+    @staticmethod
+    def _strip_json_fences(raw: str) -> str:
+        raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
+        raw = re.sub(r"\s*```$", "", raw.strip(), flags=re.MULTILINE)
+        return raw.strip()
+
+    def _parse_json_dict(self, raw: str) -> Optional[Dict[str, Any]]:
+        if not raw or not raw.strip():
+            return None
+        cleaned = self._strip_json_fences(raw)
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return None
+
+    async def _call_llm_json(self, prompt: str, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        timeout = timeout if timeout is not None else self.LLM_TIMEOUT_SECONDS
+        for _ in range(2):
+            raw = await self._extraction_service._call_llm(prompt, timeout=timeout)
+            parsed = self._parse_json_dict(raw)
+            if parsed is not None:
+                return parsed
+        return None
+
+    async def _build_section_plan(self, description: str) -> Dict[str, str]:
+        desc = (description or "").strip()
+        if not desc:
+            return {"Nội dung": "Trích xuất toàn bộ nội dung liên quan từ tài liệu"}
+
+        prompt = f"""Bạn là chuyên gia phân tích cấu trúc báo cáo hành chính tiếng Việt.
+
+## NHIỆM VỤ
+Từ mô tả template báo cáo bên dưới, tạo JSON object mô tả các section cần trích xuất.
+
+## QUY TẮC
+- Trả về CHỈ JSON hợp lệ (không markdown, không giải thích)
+- Mỗi key = tên section CHÍNH XÁC (giữ số thứ tự I., II., 1., 2., ... nếu có)
+- Mỗi value = mô tả ngắn gọn nội dung cần trích xuất cho section đó (tiếng Việt)
+- Không thêm key ngoài các section thực sự có trong template
+
+## MÔ TẢ TEMPLATE
+{desc}
+
+JSON:"""
+
+        result = await self._call_llm_json(prompt)
+        if result:
+            plan: Dict[str, str] = {}
+            for key, value in result.items():
+                title = str(key).strip()
+                if not title:
+                    continue
+                plan[title] = str(value).strip() if value else title
+            if plan:
+                logger.info("section_plan:llm_ok sections=%s", len(plan))
+                return plan
+
+        keys = self._extract_template_keys(desc)
+        if keys:
+            logger.info("section_plan:fallback_bullets sections=%s", len(keys))
+            return {key: key for key in keys}
+
+        logger.info("section_plan:fallback_single_section")
+        return {"Nội dung": desc}
+
+    @staticmethod
+    def _split_content(text: str, max_chars: int = 15000) -> List[str]:
+        if not text:
+            return []
+
+        chunks: List[str] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            end = min(i + max_chars, n)
+            if end < n:
+                window = text[i:end]
+                brk = max(window.rfind("\n"), window.rfind(" "))
+                if brk > max_chars // 2:
+                    end = i + brk
+            part = text[i:end].strip()
+            if part:
+                chunks.append(part)
+            i = end if end > i else i + max_chars
+
+        logger.info(
+            "section_extract:split_content chars=%s max_chars=%s chunks=%s",
+            n,
+            max_chars,
+            len(chunks),
+        )
+        return chunks
+
+    def _empty_chunk_result(self, section_plan: Dict[str, str]) -> Dict[str, List[str]]:
+        return {key: [] for key in section_plan}
+
+    def _normalize_chunk_extraction(
+        self,
+        parsed: Dict[str, Any],
+        section_plan: Dict[str, str],
+    ) -> Dict[str, List[str]]:
+        result: Dict[str, List[str]] = {}
+        parsed_norm = {self._normalize_key(k): k for k in parsed}
+
+        for key in section_plan:
+            val = parsed.get(key)
+            if val is None:
+                orig_key = parsed_norm.get(self._normalize_key(key))
+                if orig_key is not None:
+                    val = parsed.get(orig_key)
+
+            if isinstance(val, list):
+                result[key] = [str(item).strip() for item in val if str(item).strip()]
+            elif isinstance(val, str) and val.strip():
+                result[key] = [val.strip()]
+            else:
+                result[key] = []
+
+        return result
+
+    async def _extract_chunk_by_sections(
+        self,
+        chunk: str,
+        section_plan: Dict[str, str],
+    ) -> Dict[str, List[str]]:
+        sections_json = json.dumps(section_plan, ensure_ascii=False, indent=2)
+        prompt = f"""Bạn là chuyên gia trích xuất thông tin từ tài liệu tiếng Việt.
+
+## NHIỆM VỤ
+Đọc INPUT TEXT và trích xuất thông tin cho từng section trong danh sách bên dưới.
+
+## DANH SÁCH SECTION
+(key = tên section, value = mô tả nội dung cần trích xuất)
+{sections_json}
+
+## QUY TẮC OUTPUT
+- Trả về CHỈ JSON hợp lệ
+- Mỗi key section phải có trong output
+- Giá trị mỗi section là mảng (array) các ý nội dung — mỗi ý là một đoạn văn, có nội dung chi tiết, đầy đủ được phản ánh trong tài liệu
+- Mỗi section phải có tối thiểu 2 đoạn văn nếu có đủ thông tin trong INPUT; nếu không đủ nội dung thì chỉ viết số đoạn mà dữ liệu thực sự hỗ trợ
+- Mỗi đoạn văn trong section càng dài càng tốt, cố gắng giữ nội dung phân tích từ INPUT
+- Nếu không có thông tin liên quan → []
+- Không bịa, không suy diễn ngoài INPUT
+- Viết bằng tiếng Việt
+- Không bọc trong markdown code fence
+
+## INPUT TEXT
+{chunk}
+
+JSON:"""
+
+        parsed = await self._call_llm_json(prompt)
+        if not parsed:
+            logger.warning("section_extract:chunk_parse_failed")
+            return self._empty_chunk_result(section_plan)
+
+        return self._normalize_chunk_extraction(parsed, section_plan)
+
+    @staticmethod
+    def _section_arrays_to_final_json(
+        report: Dict[str, List[str]],
+        section_plan: Dict[str, str],
+    ) -> Dict[str, Optional[str]]:
+        final: Dict[str, Optional[str]] = {}
+        for key in section_plan:
+            items = report.get(key, [])
+            final[key] = "\n\n".join(items) if items else None
+        return final
+
+    def _build_merge_prompt(
+        self,
+        current: Dict[str, List[str]],
+        new_data: Dict[str, List[str]],
+        section_plan: Dict[str, str],
+    ) -> str:
+        current_json = json.dumps(current, ensure_ascii=False, indent=2)
+        new_json = json.dumps(new_data, ensure_ascii=False, indent=2)
+        sections_json = json.dumps(section_plan, ensure_ascii=False, indent=2)
+        return f"""Bạn là chuyên gia biên tập báo cáo tiếng Việt.
+
+## NHIỆM VỤ
+Gộp BÁO CÁO HIỆN TẠI với DỮ LIỆU MỚI từ chunk tài liệu thành một báo cáo thống nhất.
+
+## DANH SÁCH SECTION
+{sections_json}
+
+## BÁO CÁO HIỆN TẠI (mỗi section là mảng các đoạn)
+{current_json}
+
+## DỮ LIỆU MỚI (từ chunk tiếp theo — mỗi section là mảng các đoạn)
+{new_json}
+
+## QUY TẮC
+- Trả về CHỈ JSON hợp lệ với đúng các key section
+- Mỗi section: gộp tất cả các ý, các nội dung chi tiết nhất có thể, viết thành các đoạn văn logic, tiếng Việt
+- Mỗi section phải có tối thiểu 2 đoạn văn nếu có đủ thông tin; nếu không đủ nội dung thì chỉ viết số đoạn mà dữ liệu thực sự hỗ trợ
+- Không trùng lặp các ý giữa báo cáo cũ và dữ liệu mới
+- Chi tiết nhất có thể, không bỏ sót ý
+- Section không có thông tin → []
+- Không bọc trong markdown code fence
+- Nếu trong báo có có section kết luận, tổng kết, đánh giá, kiến nghị, thì tổng hợp lại nội dung từ các section khác
+- Nếu section quá dài, tổng độ dài toàn bộ báo cáo quá {self.MAX_REPORT_CHARS} ký tự; thì tóm tắt gộp các ý của section sao cho ko vượt quá giới hạn, nhưng vẫn chi tiết nhất có thể
+JSON:"""
+
+    def _build_merge_two_reports_prompt(
+        self,
+        current: Dict[str, List[str]],
+        other: Dict[str, List[str]],
+        section_plan: Dict[str, str],
+    ) -> str:
+        current_json = json.dumps(current, ensure_ascii=False, indent=2)
+        other_json = json.dumps(other, ensure_ascii=False, indent=2)
+        sections_json = json.dumps(section_plan, ensure_ascii=False, indent=2)
+        return f"""Bạn là chuyên gia biên tập báo cáo tiếng Việt.
+
+## NHIỆM VỤ
+Gộp hai báo cáo từ các tài liệu khác nhau thành một báo cáo thống nhất.
+
+## DANH SÁCH SECTION
+{sections_json}
+
+## BÁO CÁO HIỆN TẠI (mỗi section là mảng các đoạn)
+{current_json}
+
+## BÁO CÁO MỚI (từ tài liệu khác — mỗi section là mảng các đoạn)
+{other_json}
+
+## QUY TẮC
+- Trả về CHỈ JSON hợp lệ với đúng các key section
+- Mỗi section: gộp tất cả các ý từ hai báo cáo, các nội dung chi tiết nhất có thể, viết thành các đoạn văn logic, tiếng Việt
+- Mỗi section phải có tối thiểu 2 đoạn văn nếu có đủ thông tin; nếu không đủ nội dung thì chỉ viết số đoạn mà dữ liệu thực sự hỗ trợ
+- Chi tiết nhất có thể, không bỏ sót ý
+- Section không có thông tin → []
+- Không bọc trong markdown code fence
+- Nếu trong báo có có section kết luận, tổng kết, đánh giá, kiến nghị, thì tổng hợp lại nội dung từ các section khác
+JSON:"""
+
+    def _normalize_merged_report(
+        self,
+        parsed: Dict[str, Any],
+        section_plan: Dict[str, str],
+    ) -> Dict[str, List[str]]:
+        result: Dict[str, List[str]] = {}
+        parsed_norm = {self._normalize_key(k): k for k in parsed}
+
+        for key in section_plan:
+            val = parsed.get(key)
+            if val is None:
+                orig_key = parsed_norm.get(self._normalize_key(key))
+                if orig_key is not None:
+                    val = parsed.get(orig_key)
+
+            if val is None or val == "":
+                result[key] = []
+            elif isinstance(val, str):
+                result[key] = [val.strip()] if val.strip() else []
+            elif isinstance(val, list):
+                result[key] = [str(item).strip() for item in val if str(item).strip()]
+            else:
+                result[key] = [str(val).strip()] if str(val).strip() else []
+
+        return result
+
+    @staticmethod
+    def _print_json_step(label: str, data: Any) -> None:
+        print(f"\n{'=' * 60}")
+        print(f"[SectionExtract] {label}")
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        print(f"{'=' * 60}\n")
+
+    async def _merge_reports(
+        self,
+        current: Dict[str, List[str]],
+        new_data: Dict[str, List[str]],
+        section_plan: Dict[str, str],
+        step_label: str = "merge_chunk",
+    ) -> Dict[str, List[str]]:
+        prompt = self._build_merge_prompt(current, new_data, section_plan)
+        parsed = await self._call_llm_json(prompt)
+        if parsed:
+            merged = self._normalize_merged_report(parsed, section_plan)
+            return merged
+
+        logger.warning("section_extract:merge_chunk_failed keeping_current")
+        print(f"[SectionExtract] {step_label} — merge failed, giữ báo cáo hiện tại")
+        return current
+
+    async def _merge_two_reports(
+        self,
+        current: Dict[str, List[str]],
+        other: Dict[str, List[str]],
+        section_plan: Dict[str, str],
+        step_label: str = "merge_file",
+    ) -> Dict[str, List[str]]:
+        prompt = self._build_merge_two_reports_prompt(current, other, section_plan)
+        parsed = await self._call_llm_json(prompt)
+        if parsed:
+            merged = self._normalize_merged_report(parsed, section_plan)
+            self._print_json_step(f"{step_label} — BÁO CÁO SAU GỘP", merged)
+            return merged
+
+        logger.warning("section_extract:merge_file_failed keeping_current")
+        print(f"[SectionExtract] {step_label} — merge failed, giữ báo cáo hiện tại")
+        return current
+
+    async def _process_one_content(
+        self,
+        source_name: str,
+        text: str,
+        section_plan: Dict[str, str],
+    ) -> Tuple[Dict[str, List[str]], Optional[str]]:
+        chunks = self._split_content(text, self.CHUNK_SIZE_CHARS)
+        if not chunks:
+            return {}, "empty content"
+
+        async def _extract_one(idx: int, chunk_text: str):
+            async with self._semaphore:
+                try:
+                    data = await self._extract_chunk_by_sections(chunk_text, section_plan)
+                    return idx, data, None
+                except Exception as exc:
+                    logger.exception(
+                        "section_extract:chunk_error source=%s idx=%s err=%s",
+                        source_name,
+                        idx,
+                        exc,
+                    )
+                    print(f"[SectionExtract] {source_name} chunk {idx} error: {exc}")
+                    return idx, self._empty_chunk_result(section_plan), str(exc)
+
+        extract_started = time.perf_counter()
+        results = await asyncio.gather(*[_extract_one(i, c) for i, c in enumerate(chunks)])
+        logger.info(
+            "section_extract:chunks_done source=%s chunks=%s elapsed_ms=%s",
+            source_name,
+            len(chunks),
+            self._elapsed_ms(extract_started),
+        )
+
+        chunk_results: List[Dict[str, List[str]]] = []
+        for idx, data, err in sorted(results, key=lambda x: x[0]):
+            if err:
+                logger.warning(
+                    "section_extract:chunk_warning source=%s idx=%s err=%s",
+                    source_name,
+                    idx,
+                    err,
+                )
+                print(f"[SectionExtract] {source_name} chunk {idx} warning: {err}")
+            chunk_results.append(data)
+
+        report = chunk_results[0]
+
+        for i in range(1, len(chunk_results)):
+            merge_started = time.perf_counter()
+            report = await self._merge_reports(
+                report,
+                chunk_results[i],
+                section_plan,
+                step_label=f"{source_name} — gộp chunk {i}",
+            )
+            logger.info(
+                "section_extract:chunk_merge_done source=%s chunk_idx=%s elapsed_ms=%s",
+                source_name,
+                i,
+                self._elapsed_ms(merge_started),
+            )
+
+        return report, None
+
+    async def extract_from_contents(
+        self,
+        items: List[Tuple[str, str]],
+        report_template: str,
+    ) -> MultiFileExtractionReport:
+        started = time.perf_counter()
+        logger.info("section_extract:start files=%s", len(items))
+
+        section_plan = await self._build_section_plan(report_template)
+        logger.info("section_extract:section_plan sections=%s", len(section_plan))
+
+        file_reports: List[Tuple[str, Dict[str, List[str]]]] = []
+        warnings: List[str] = []
+        failed_files = 0
+        source_files = [name for name, _ in items]
+
+        for name, content in items:
+            if not (content or "").strip():
+                warnings.append(f"{name}: empty content")
+                failed_files += 1
+                logger.warning("section_extract:skip_empty source=%s", name)
+                continue
+
+            file_started = time.perf_counter()
+            report, err = await self._process_one_content(name, content, section_plan)
+            if err:
+                warnings.append(f"{name}: {err}")
+                failed_files += 1
+                continue
+
+            file_reports.append((name, report))
+            logger.info(
+                "section_extract:file_done source=%s elapsed_ms=%s",
+                name,
+                self._elapsed_ms(file_started),
+            )
+
+        if not file_reports:
+            final_json: Dict[str, Any] = {key: None for key in section_plan}
+            return MultiFileExtractionReport(
+                source_files=source_files,
+                processed_files=0,
+                failed_files=failed_files,
+                elapsed_ms=self._elapsed_ms(started),
+                final_json=final_json,
+                warnings=warnings,
+            )
+        
+        merged_report = file_reports[0][1]
+        for i in range(1, len(file_reports)):
+            merge_started = time.perf_counter()
+            other_name = file_reports[i][0]
+            merged_report = await self._merge_two_reports(
+                merged_report,
+                file_reports[i][1],
+                section_plan,
+                step_label=f"gộp file {file_reports[i - 1][0]} + {other_name}",
+            )
+            logger.info(
+                "section_extract:file_merge_done file_idx=%s elapsed_ms=%s",
+                i,
+                self._elapsed_ms(merge_started),
+            )
+        print("--------------------------------")
+        print(file_reports)
+        print("--------------------------------")
+
+        final_json = self._section_arrays_to_final_json(merged_report, section_plan)
+        elapsed_ms = self._elapsed_ms(started)
+        total_chars = sum(len(v or "") for v in final_json.values())
+        logger.info(
+            "section_extract:done files=%s processed=%s failed=%s final_chars=%s elapsed_ms=%s",
+            len(items),
+            len(file_reports),
+            failed_files,
+            total_chars,
+            elapsed_ms,
+        )
+
+        return MultiFileExtractionReport(
+            source_files=source_files,
+            processed_files=len(file_reports),
+            failed_files=failed_files,
+            elapsed_ms=elapsed_ms,
+            final_json=final_json,
+            warnings=warnings,
+        )
