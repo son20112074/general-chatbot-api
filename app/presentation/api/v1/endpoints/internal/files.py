@@ -6,6 +6,7 @@ from app.core.database import Base, get_db
 from app.core.file_service import FileService
 from app.core.query import CursorPaginationResult, QueryInput
 from app.domain.services.file_service import FileQueryService
+from app.domain.services.system_setting_service import SystemSettingService
 from app.domain.models.file import File as FileModel
 from app.domain.models.user import User
 from app.presentation.api.dependencies import get_current_user
@@ -1049,22 +1050,20 @@ async def move_file(
 @router.get(
     "/responsible-departments",
     response_model=DistinctResponsibleDepartmentsResponse,
-    summary="List distinct responsible departments",
-    description="""Returns distinct department names from `files.responsible_departments`
-for files the current user is allowed to see (same RBAC rules as `list-all`).
+    summary="List responsible departments",
+    description="""Returns department names from `system_settings` (key `department`).
 
-Names are deduplicated case-insensitively while preserving one display form from the database.
 Sorted alphabetically (case-insensitive).""",
 )
 async def list_distinct_responsible_departments(
     current_user: TokenData = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    service = FileQueryService(db)
     try:
-        departments = await service.list_distinct_responsible_departments(
-            current_user.user_id,
-            current_user.role_id,
+        departments_data = await SystemSettingService(db).get_departments_list()
+        departments = sorted(
+            (d["name"] for d in departments_data if d.get("name")),
+            key=lambda x: x.casefold(),
         )
         return DistinctResponsibleDepartmentsResponse(
             departments=departments,

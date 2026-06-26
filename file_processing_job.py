@@ -391,21 +391,26 @@ class FileProcessingJob:
                 {{
                   "responsible_departments": ["Tên phòng ban 1", "Tên phòng ban 2"],
                   "responsible_departments_reasons": [
-                    "1-3 câu tiếng Việt: trích ý chính từ bản tóm tắt giải thích vì sao phòng ban này phù hợp",
+                    "Tối thiểu 3 đoạn văn, giải thích lý do chi tiết tại sao phân loại tài liệu vào phòng ban này",
                     "..."
                   ]
                 }}
 
                 Quy tắc:
                 - Mỗi phần tử trong responsible_departments phải là đúng chuỗi "Tên phòng ban" như trong danh mục (tiếng Việt có dấu).
-                - responsible_departments_reasons phải cùng độ dài và cùng thứ tự với responsible_departments; mỗi lý do tương ứng một phòng ban.
-                - Mỗi lý do ngắn gọn (1-3 câu), bám nội dung bản tóm tắt, không bịa thêm.
+                - responsible_departments_reasons phải cùng thứ tự với responsible_departments; mỗi lý do tương ứng một phòng ban, gồm 1 số đoạn văn bản để giải thích chi tiết tại sao phân loại tài liệu vào phòng ban này.
                 - Phòng ban phù hợp nhất phải đứng đầu danh sách.
                 - Luôn trả về ít nhất một phòng ban phù hợp nhất; không để mảng rỗng.
                 - Có thể chọn nhiều phòng ban nếu nội dung liên quan chéo.
                 - Không dùng markdown, không giải thích thêm, không thêm trường JSON khác.
+                - Mẫu ví dụ về 1 Lý do:
+
+                Tờ trình đề cập đến các công việc mang tính chất quản trị hành chính thuần túy:
+
+                    - Thủ tục pháp lý: Thành lập pháp nhân mới, đăng ký kinh doanh, cung cấp thông tin CCCD, địa chỉ trụ sở.
+                    - Quản lý cơ sở vật chất: Thuê tòa nhà, trang bị hạ tầng mạng, máy tính, bàn ghế, nội thất văn phòng.
+                    - Tất cả các hạng mục này nằm trong nhóm nghiệp vụ "Hành chính - Thông tin" và "Hậu cần" mà Ban này đảm nhiệm.
             """
-            # logger.info(f"System prompt: {system_prompt}")
             payload = {
                 "model": self.summary_service.model,
                 "messages": [

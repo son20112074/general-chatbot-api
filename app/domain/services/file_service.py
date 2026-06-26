@@ -425,42 +425,6 @@ class FileQueryService:
             )
         ]
 
-    async def list_distinct_responsible_departments(
-        self,
-        user_id: int,
-        user_role_id: int,
-    ) -> List[str]:
-        """Distinct department names from responsible_departments on visible files."""
-        visibility_filter = await self._build_file_visibility_filter(user_id, user_role_id)
-        base_cond = and_(
-            or_(FileModel.is_deleted == False, FileModel.is_deleted == None),
-            *visibility_filter,
-        )
-        dept_expr = func.unnest(FileModel.responsible_departments).label("department")
-        query = (
-            select(dept_expr)
-            .select_from(FileModel)
-            .where(base_cond)
-            .where(FileModel.responsible_departments.isnot(None))
-            .where(func.coalesce(func.array_length(FileModel.responsible_departments, 1), 0) > 0)
-        )
-        rows = (await self.db.execute(query)).all()
-
-        seen: set[str] = set()
-        departments: List[str] = []
-        for row in rows:
-            name = (row.department or "").strip()
-            if not name:
-                continue
-            key = name.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            departments.append(name)
-
-        departments.sort(key=lambda x: x.casefold())
-        return departments
-    
     async def query_files(
         self,
         query_params: FileListAllSchema,

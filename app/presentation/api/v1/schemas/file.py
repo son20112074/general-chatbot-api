@@ -82,7 +82,7 @@ class CountryTechStatsResponse(BaseModel):
 class DistinctResponsibleDepartmentsResponse(BaseModel):
     departments: List[str] = Field(
         ...,
-        description="Danh sách tên phòng ban distinct từ `files.responsible_departments` (theo quyền xem file).",
+        description="Danh sách tên phòng ban từ `system_settings` (key `department`).",
     )
     total: int = Field(..., description="Số lượng phòng ban trong danh sách")
 
