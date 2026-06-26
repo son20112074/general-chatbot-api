@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.core.database import get_db
-from app.presentation.api.v1.schemas.chat import FirstMessageResponse
+from app.presentation.api.v1.schemas.chat import FirstMessageResponse, LatestSessionResponse
 from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.auth import TokenData
 from app.domain.models.chat_message import ChatMessage
@@ -81,3 +81,37 @@ async def get_first_messages(
         )
         for row in rows
     ]
+
+
+@router.get("/latest-session", response_model=LatestSessionResponse)
+async def get_latest_session_by_source_path(
+    source_path: str = Query(..., min_length=1),
+    db: AsyncSession = Depends(get_db),
+    current_user: TokenData = Depends(get_current_user),
+):
+    """Return the most recent chat session for the current user and source_path."""
+    stmt = (
+        select(
+            ChatMessage.session_id,
+            ChatMessage.source_path,
+            ChatMessage.created_at,
+        )
+        .join(Session, ChatMessage.session_id == Session.session_id)
+        .where(
+            ChatMessage.source_path == source_path,
+            Session.user_id == str(current_user.user_id),
+        )
+        .order_by(ChatMessage.created_at.desc())
+        .limit(1)
+    )
+
+    result = await db.execute(stmt)
+    row = result.mappings().first()
+    if not row:
+        return LatestSessionResponse(session_id=None, source_path=source_path)
+
+    return LatestSessionResponse(
+        session_id=row["session_id"],
+        source_path=row["source_path"],
+        last_message_at=row["created_at"],
+    )
