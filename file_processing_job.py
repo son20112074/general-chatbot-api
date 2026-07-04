@@ -354,9 +354,15 @@ class FileProcessingJob:
         return [], []
 
     @staticmethod
-    def _reason_at_index(raw_reasons: List[Any], index: int) -> str:
-        if index < len(raw_reasons) and isinstance(raw_reasons[index], str):
-            return raw_reasons[index].strip()
+    def _parse_department_reason(raw_reason: Any) -> str:
+        """Extract a single shared reason string from LLM output."""
+        if isinstance(raw_reason, str):
+            text = raw_reason.strip()
+            return text or FileProcessingJob._MISSING_REASON
+        if isinstance(raw_reason, list):
+            for item in raw_reason:
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
         return FileProcessingJob._MISSING_REASON
 
     async def _load_departments(self) -> List[Dict[str, str]]:
@@ -366,7 +372,7 @@ class FileProcessingJob:
     async def _classify_responsible_departments(
         self, summary: Optional[str], extension: str
     ) -> Tuple[List[str], List[str]]:
-        """Classify responsible departments and per-department reasons from summary."""
+        """Classify responsible departments and a shared reason from summary."""
         if not summary or len(summary.strip()) == 0:
             return [], []
 
@@ -390,26 +396,25 @@ class FileProcessingJob:
                 Trả về DUY NHẤT một JSON hợp lệ với cấu trúc chính xác:
                 {{
                   "responsible_departments": ["Tên phòng ban 1", "Tên phòng ban 2"],
-                  "responsible_departments_reasons": [
-                    "Tối thiểu 3 đoạn văn, giải thích lý do chi tiết tại sao phân loại tài liệu vào phòng ban này",
-                    "..."
-                  ]
+                  "responsible_departments_reasons":"Lý do chi tiết"
                 }}
 
                 Quy tắc:
                 - Mỗi phần tử trong responsible_departments phải là đúng chuỗi "Tên phòng ban" như trong danh mục (tiếng Việt có dấu).
-                - responsible_departments_reasons phải cùng thứ tự với responsible_departments; mỗi lý do tương ứng một phòng ban, gồm 1 số đoạn văn bản để giải thích chi tiết tại sao phân loại tài liệu vào phòng ban này.
                 - Phòng ban phù hợp nhất phải đứng đầu danh sách.
+                - responsible_departments_reasons là lý do chi tiết tại sao phân loại tài liệu vào các phòng ban này. Lý do cần giải thích rõ đâu là đơn vị chủ trì, đâu là đơn vị tham gia phối hợp.
+                - Nội dung responsible_departments_reasons như sau:
+                    Đây là tài liệu ....Giới thiệu tóm tắt nội dung tài liệu
+                    Tôi xin đưa ra lý do phân công tài liệu vào các phòng ban như sau:
+                    **Đơn vị xử lý chính: Đơn vị XXX**
+                    Lý do phân công: ..... (chi tiết giải thích nội dung liên quan)
+                    **Đơn vị tham gia phối hợp: Đơn vị A, B**
+                    Lý do phối hợp:
+                    - **Đơn vị A**: ..... (chi tiết giải thích nội dung liên quan)
+                    - **Đơn vị B**: ..... (chi tiết giải thích nội dung liên quan)
                 - Luôn trả về ít nhất một phòng ban phù hợp nhất; không để mảng rỗng.
                 - Có thể chọn nhiều phòng ban nếu nội dung liên quan chéo.
                 - Không dùng markdown, không giải thích thêm, không thêm trường JSON khác.
-                - Mẫu ví dụ về 1 Lý do:
-
-                Tờ trình đề cập đến các công việc mang tính chất quản trị hành chính thuần túy:
-
-                    - Thủ tục pháp lý: Thành lập pháp nhân mới, đăng ký kinh doanh, cung cấp thông tin CCCD, địa chỉ trụ sở.
-                    - Quản lý cơ sở vật chất: Thuê tòa nhà, trang bị hạ tầng mạng, máy tính, bàn ghế, nội thất văn phòng.
-                    - Tất cả các hạng mục này nằm trong nhóm nghiệp vụ "Hành chính - Thông tin" và "Hậu cần" mà Ban này đảm nhiệm.
             """
             payload = {
                 "model": self.summary_service.model,
@@ -439,26 +444,25 @@ class FileProcessingJob:
             cleaned = self.summary_service._clean_json_content(llm_content.strip())
             parsed = json.loads(cleaned)
             raw_names = parsed.get("responsible_departments", [])
-            raw_reasons = parsed.get("responsible_departments_reasons", [])
+            shared_reason = self._parse_department_reason(
+                parsed.get("responsible_departments_reasons", "")
+            )
 
             if not isinstance(raw_names, list):
                 return self._fallback_department_classification(departments)
-            if not isinstance(raw_reasons, list):
-                raw_reasons = []
 
             normalized_names: List[str] = []
-            normalized_reasons: List[str] = []
-            for i, item in enumerate(raw_names):
+            for item in raw_names:
                 if not isinstance(item, str):
                     continue
                 canonical = self._resolve_canonical_department_name(item, departments)
                 if canonical and canonical not in normalized_names:
                     normalized_names.append(canonical)
-                    normalized_reasons.append(self._reason_at_index(raw_reasons, i))
 
             if not normalized_names:
                 return self._fallback_department_classification(departments)
 
+            normalized_reasons = [shared_reason] * len(normalized_names)
             return normalized_names, normalized_reasons
         except Exception as e:
             logger.warning(f"Failed to classify responsible departments for {extension}: {e}")
