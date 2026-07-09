@@ -38,7 +38,7 @@ class MultiFileExtractionReport:
 
 class TemplateExtractionMultiFilesService:
     CHUNK_SIZE_CHARS = 15000
-    MAX_REPORT_CHARS = 30000
+    MAX_REPORT_CHARS = 20000
     LLM_TIMEOUT_SECONDS = 90
 
     _SECTION_ARRAY_JSON_FORMAT = """## ĐỊNH DẠNG JSON BẮT BUỘC
@@ -58,7 +58,14 @@ SAI — không dùng dạng mảng object:
 [
   {"I. Tình hình chung": ["Đoạn văn 1...", "Đoạn văn 2..."]},
   {"II. Kết quả thực hiện": []}
-]"""
+]
+
+## QUY TẮC ESCAPE (BẮT BUỘC — JSON PHẢI HỢP LỆ)
+- Every backslash inside string values MUST be escaped: viết "\\\\" thay cho một dấu "\\".
+- KHÔNG dùng công thức LaTeX/toán học có dấu "\\" (ví dụ: $\\phi$, $\\rightarrow$, $\\alpha$, $\\cdot$, $\\le$).
+  Thay vào đó dùng chữ thường: "phi", "suy ra", "alpha", "nhân", "nhỏ hơn hoặc bằng", "độ".
+- Chỉ dùng các escape JSON hợp lệ: \\" \\\\ \\/ \\b \\f \\n \\r \\t \\uXXXX. Không tạo escape khác (\\p, \\a, ... đều SAI).
+- Viết ký hiệu độ là "độ" hoặc "°" (KHÔNG dùng "\\circ"), phân số viết bằng chữ (ví dụ: "1/3")."""
 
     def __init__(
         self,
@@ -1071,7 +1078,7 @@ JSON:"""
 
         reason = f"{last_error} (raw_len={len(last_raw)})"
         if last_raw:
-            preview = last_raw[:500].replace("\n", "\\n")
+            preview = last_raw.replace("\n", "\\n")
             reason += f", raw_preview={preview!r}"
         return None, reason
 

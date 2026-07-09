@@ -25,7 +25,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_ROOT_USER_ACTION=ignore \
     PATH="/opt/venv/bin:$PATH" \
-    TZ=Asia/Ho_Chi_Minh
+    TZ=Asia/Ho_Chi_Minh \
+    NLTK_DATA=/usr/local/share/nltk_data
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -52,8 +53,13 @@ WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
 
-# unstructured/langchain Excel parsing requires NLTK tokenizers (punkt_tab since NLTK 3.9+)
-RUN /opt/venv/bin/python -c "import nltk; nltk.download('punkt_tab'); nltk.download('punkt')"
+# unstructured/langchain Excel parsing requires NLTK tokenizers (punkt_tab since NLTK 3.9+).
+# Download at build time into a fixed NLTK_DATA dir so the container runs fully offline.
+# `python -m nltk.downloader` exits non-zero on failure, so a broken build fails loudly
+# instead of silently shipping an image that re-downloads (and hangs) at runtime.
+RUN mkdir -p "$NLTK_DATA" \
+    && /opt/venv/bin/python -m nltk.downloader -d "$NLTK_DATA" punkt_tab punkt \
+    && /opt/venv/bin/python -c "import nltk; nltk.data.find('tokenizers/punkt_tab'); nltk.data.find('tokenizers/punkt')"
 
 EXPOSE 8000
 
