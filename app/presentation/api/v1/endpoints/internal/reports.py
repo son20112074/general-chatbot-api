@@ -197,13 +197,25 @@ def _save_markdown_docx(content: bytes) -> str:
 @router.get("/templates", response_model=Dict)
 async def list_templates(
     q: Optional[str] = Query(None, description="Search by template name"),
+    file_mode: Optional[str] = Query(None, description="Filter by file_mode: select | by_period"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    if file_mode is not None and file_mode not in ("select", "by_period"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="file_mode must be 'select' or 'by_period'",
+        )
     service = ReportService(db)
-    result = await service.list_templates(created_by=current_user.user_id, q=q, page=page, page_size=page_size)
+    result = await service.list_templates(
+        created_by=current_user.user_id,
+        q=q,
+        file_mode=file_mode,
+        page=page,
+        page_size=page_size,
+    )
     return {
         "data": [ReportTemplateResponse.model_validate(t) for t in result["data"]],
         "total": result["total"],
@@ -271,6 +283,53 @@ async def delete_template(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
     _assert_template_owner(template, current_user.user_id)
     await service.delete_template(template_id)
+
+
+@router.post(
+    "/templates/{template_id}/files/{file_id}",
+    response_model=ReportTemplateResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def add_file_to_template(
+    template_id: int,
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Add a file to a select-mode report template (giỏ tin)."""
+    service = ReportService(db)
+    template = await service.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+    _assert_template_owner(template, current_user.user_id)
+    try:
+        template = await service.add_file_to_template(template_id, file_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return ReportTemplateResponse.model_validate(template)
+
+
+@router.delete(
+    "/templates/{template_id}/files/{file_id}",
+    response_model=ReportTemplateResponse,
+)
+async def remove_file_from_template(
+    template_id: int,
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Remove a file from a select-mode report template (giỏ tin)."""
+    service = ReportService(db)
+    template = await service.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+    _assert_template_owner(template, current_user.user_id)
+    try:
+        template = await service.remove_file_from_template(template_id, file_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return ReportTemplateResponse.model_validate(template)
 
 
 # ── Reports ───────────────────────────────────────────────────────────────────

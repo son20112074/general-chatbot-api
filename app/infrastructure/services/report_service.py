@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.domain.models.report import Report, ReportStatusEnum
 from app.domain.models.report_document import ReportDocument
@@ -52,13 +53,20 @@ class ReportService:
         return result.scalar_one_or_none()
 
     async def list_templates(
-        self, created_by: Optional[int] = None, q: Optional[str] = None, page: int = 1, page_size: int = 20
+        self,
+        created_by: Optional[int] = None,
+        q: Optional[str] = None,
+        file_mode: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20,
     ) -> Dict[str, Any]:
         base_filter = []
         if created_by is not None:
             base_filter.append(ReportTemplate.created_by == created_by)
         if q:
             base_filter.append(ReportTemplate.name.ilike(f"%{_escape_like(q)}%"))
+        if file_mode:
+            base_filter.append(ReportTemplate.file_mode == FileModeEnum(file_mode))
 
         total_result = await self.db.execute(
             select(func.count()).select_from(ReportTemplate).where(*base_filter)
@@ -107,6 +115,36 @@ class ReportService:
         await self.db.delete(template)
         await self.db.commit()
         return True
+
+    async def add_file_to_template(self, template_id: int, file_id: int) -> ReportTemplate:
+        template = await self.get_template(template_id)
+        if not template:
+            raise ValueError("Template not found")
+        if template.file_mode != FileModeEnum.SELECT:
+            raise ValueError("Only select-mode templates can hold specific files")
+        ids = list(template.file_ids or [])
+        if file_id not in ids:
+            ids.append(file_id)
+            template.file_ids = ids
+            flag_modified(template, "file_ids")
+            await self.db.commit()
+            await self.db.refresh(template)
+        return template
+
+    async def remove_file_from_template(self, template_id: int, file_id: int) -> ReportTemplate:
+        template = await self.get_template(template_id)
+        if not template:
+            raise ValueError("Template not found")
+        if template.file_mode != FileModeEnum.SELECT:
+            raise ValueError("Only select-mode templates can hold specific files")
+        ids = list(template.file_ids or [])
+        if file_id in ids:
+            ids = [i for i in ids if i != file_id]
+            template.file_ids = ids
+            flag_modified(template, "file_ids")
+            await self.db.commit()
+            await self.db.refresh(template)
+        return template
 
     # ── Reports ───────────────────────────────────────────────────────────────
 

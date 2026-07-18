@@ -18,6 +18,7 @@ from .report_document import *
 from .report_template import *
 from .report import *
 from .system_setting import *
+from .linked_system import *
 
 __all__ = [
     "User",
@@ -40,5 +41,5 @@ __all__ = [
     "ReportTemplate",
     "Report",
     "SystemSetting",
-
+    "LinkedSystem",
 ]
