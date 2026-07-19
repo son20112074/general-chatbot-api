@@ -43,6 +43,9 @@ BATCH_SIZE = 10
 CHUNK_SIZE = 10000
 CHUNK_OVERLAP = 1000
 
+# Only process this many chunks per file (first N); rest are skipped
+MAX_CHUNKS_PER_FILE = 25
+
 # Max concurrent LLM calls per file
 MAX_CONCURRENT_CHUNKS = 3
 
@@ -1114,9 +1117,20 @@ async def _process_single_file(
         return
 
     chunks = _split_content(content)
+    total_chunks = len(chunks)
+    if total_chunks > MAX_CHUNKS_PER_FILE:
+        logger.info(
+            "File %d (%s): %d chunks, processing only first %d",
+            doc_file.id,
+            doc_file.name,
+            total_chunks,
+            MAX_CHUNKS_PER_FILE,
+        )
+        chunks = chunks[:MAX_CHUNKS_PER_FILE]
+
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHUNKS)
 
-    # Process all chunks concurrently
+    # Process chunks concurrently (capped at MAX_CHUNKS_PER_FILE)
     tasks = [
         _extract_chunk(
             http_client,

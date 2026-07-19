@@ -55,8 +55,8 @@ def register_jobs(scheduler: AsyncIOScheduler):
     scheduler.add_job(
         report_export_daily_job,
         trigger="cron",
-        hour=3,
-        minute=59,
+        hour=1,
+        minute=0,
         id="report_export_daily",
         name="Report Export (Daily)",
         replace_existing=True,
@@ -92,16 +92,16 @@ def register_jobs(scheduler: AsyncIOScheduler):
         replace_existing=True,
     )
 
-    scheduler.add_job(
-        report_export_select_job,
-        trigger="cron",
-        hour=22,
-        minute=0,
-        id="report_export_select",
-        name="Report Export (Select)",
-        replace_existing=True,
-        max_instances=1,
-    )
+    # scheduler.add_job(
+    #     report_export_select_job,
+    #     trigger="cron",
+    #     hour=22,
+    #     minute=0,
+    #     id="report_export_select",
+    #     name="Report Export (Select)",
+    #     replace_existing=True,
+    #     max_instances=1,
+    # )
 
     # # One-shot test: run weekly extraction with last-3-months files, 5 s after startup
     # scheduler.add_job(
