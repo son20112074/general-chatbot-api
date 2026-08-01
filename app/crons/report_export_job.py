@@ -2,6 +2,7 @@ import calendar
 import os
 import tempfile
 from datetime import date, datetime, time, timedelta
+from time import monotonic
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -322,6 +323,7 @@ async def _process_template(
 ) -> None:
     template_id = template.id
     template_name = template.name
+    started_at = monotonic()
 
     report = Report(
         name=f"{template_name} - {datetime.now().strftime('%d/%m/%Y')}",
@@ -385,7 +387,12 @@ async def _process_template(
         print(msg)
         await _set_docs_status(session, report.id, ReportDocumentStatus.ERROR)
         await session.execute(
-            update(Report).where(Report.id == report.id).values(status=ReportStatusEnum.FAILED)
+            update(Report)
+            .where(Report.id == report.id)
+            .values(
+                status=ReportStatusEnum.FAILED,
+                processing_time=round(monotonic() - started_at, 2),
+            )
         )
         await session.commit()
         return
@@ -416,7 +423,12 @@ async def _process_template(
         logger.exception(msg)
         print(msg)
         await session.execute(
-            update(Report).where(Report.id == report.id).values(status=ReportStatusEnum.FAILED)
+            update(Report)
+            .where(Report.id == report.id)
+            .values(
+                status=ReportStatusEnum.FAILED,
+                processing_time=round(monotonic() - started_at, 2),
+            )
         )
         await session.commit()
         return
@@ -428,7 +440,11 @@ async def _process_template(
     await session.execute(
         update(Report)
         .where(Report.id == report.id)
-        .values(status=overall_status, file_url=output_path)
+        .values(
+            status=overall_status,
+            file_url=output_path,
+            processing_time=round(monotonic() - started_at, 2),
+        )
     )
     await session.commit()
 

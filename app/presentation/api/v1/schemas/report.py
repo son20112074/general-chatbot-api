@@ -103,6 +103,7 @@ class ReportResponse(BaseModel):
     period_start: Optional[date] = None
     period_end: Optional[date] = None
     file_url: Optional[str] = None
+    processing_time: Optional[float] = None
     created_by: Optional[int] = None
     creator_name: Optional[str] = None
     created_at: datetime

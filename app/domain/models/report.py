@@ -3,7 +3,7 @@ from enum import Enum as PyEnum
 
 from sqlalchemy import Column, Date, DateTime
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from app.core.config import settings
@@ -33,6 +33,8 @@ class Report(Base):
     period_start = Column(Date, nullable=True)
     period_end = Column(Date, nullable=True)
     file_url = Column(Text, nullable=True)
+    # Processing duration in seconds (NULL while running or for legacy rows)
+    processing_time = Column(Float, nullable=True)
     created_by = Column(Integer, ForeignKey(f'{settings.DB_SCHEMA}.users.id', ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)

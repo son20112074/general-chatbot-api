@@ -108,36 +108,113 @@ def _paddle_missing_result() -> Dict[str, Any]:
 class PDFParser:
     """Parser for PDF documents supporting both text-based and image-based PDFs."""
 
+    @staticmethod
+    def _page_image_coverage(page) -> float:
+        """Fraction of page area covered by embedded images (capped at 1.0)."""
+        page_area = abs(page.rect.width * page.rect.height)
+        if page_area <= 0:
+            return 0.0
+        img_area = 0.0
+        try:
+            for info in page.get_image_info(xrefs=True):
+                bbox = info.get("bbox")
+                if not bbox or len(bbox) < 4:
+                    continue
+                img_area += abs((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
+        except Exception:
+            # Fallback: any images present without bbox → treat as unknown coverage
+            try:
+                if page.get_images(full=True):
+                    return 0.5
+            except Exception:
+                pass
+            return 0.0
+        return min(img_area / page_area, 1.0)
+
+    @staticmethod
+    def _meaningful_char_count(text: str) -> int:
+        """Count letters/digits only — ignores whitespace, punctuation, watermarks noise."""
+        return sum(1 for c in text if c.isalnum())
+
     def _is_image_based_pdf(self, file_path: Union[str, Path]) -> bool:
-        """Check if PDF is image-based (scanned) by attempting text extraction."""
+        """
+        Detect scanned/image-based PDFs.
+
+        Pure char-count fails when PyMuPDF picks up a watermark, page number, or
+        thin invisible text layer. Prefer per-page votes using:
+        - meaningful (alphanumeric) text density
+        - embedded image coverage of the page
+        """
         file_path = Path(file_path)
+
+        # Sparse text alone → scanned. Sparse-ish text + large image → scanned.
+        sparse_chars = 30
+        weak_chars = 120
+        image_cover_threshold = 0.45
 
         if fitz is not None:
             try:
                 doc = fitz.open(str(file_path))
-                text_content = ""
-                pages_to_check = min(3, len(doc))
-                for i in range(pages_to_check):
-                    try:
-                        text_content += doc.load_page(i).get_text("text").strip()
-                    except Exception:
-                        continue
-                doc.close()
-                is_image = len(text_content) <= 50
-                logger.info("PDF type check via PyMuPDF: %s (%d chars)", "image-based" if is_image else "text-based", len(text_content))
-                return is_image
+                try:
+                    pages_to_check = min(3, len(doc))
+                    image_votes = 0
+                    total_meaningful = 0
+                    for i in range(pages_to_check):
+                        try:
+                            page = doc.load_page(i)
+                            text = page.get_text("text") or ""
+                            meaningful = self._meaningful_char_count(text)
+                            coverage = self._page_image_coverage(page)
+                            total_meaningful += meaningful
+                            if meaningful <= sparse_chars or (
+                                meaningful <= weak_chars and coverage >= image_cover_threshold
+                            ):
+                                image_votes += 1
+                            logger.debug(
+                                "PDF page %d check: meaningful=%d coverage=%.2f",
+                                i,
+                                meaningful,
+                                coverage,
+                            )
+                        except Exception:
+                            image_votes += 1
+                    # Majority of sampled pages look scanned
+                    is_image = image_votes * 2 >= pages_to_check
+                    logger.info(
+                        "PDF type check via PyMuPDF: %s (%d/%d pages image-like, %d meaningful chars)",
+                        "image-based" if is_image else "text-based",
+                        image_votes,
+                        pages_to_check,
+                        total_meaningful,
+                    )
+                    return is_image
+                finally:
+                    doc.close()
             except Exception as e:
                 logger.warning("PyMuPDF check failed: %s. Falling back to pypdf check.", e)
 
-        # fitz unavailable or failed — use pypdf
+        # fitz unavailable or failed — use pypdf (text density only)
         try:
             from pypdf import PdfReader
             reader = PdfReader(str(file_path))
-            text_content = ""
-            for page in reader.pages[:3]:
-                text_content += (page.extract_text() or "").strip()
-            is_image = len(text_content) <= 50
-            logger.info("PDF type check via pypdf: %s (%d chars)", "image-based" if is_image else "text-based", len(text_content))
+            pages = reader.pages[:3]
+            image_votes = 0
+            total_meaningful = 0
+            for page in pages:
+                text = page.extract_text() or ""
+                meaningful = self._meaningful_char_count(text)
+                total_meaningful += meaningful
+                if meaningful <= sparse_chars:
+                    image_votes += 1
+            pages_to_check = max(len(pages), 1)
+            is_image = image_votes * 2 >= pages_to_check
+            logger.info(
+                "PDF type check via pypdf: %s (%d/%d pages image-like, %d meaningful chars)",
+                "image-based" if is_image else "text-based",
+                image_votes,
+                pages_to_check,
+                total_meaningful,
+            )
             return is_image
         except Exception as e:
             logger.warning("pypdf check failed: %s. Assuming image-based PDF.", e)

@@ -42,6 +42,7 @@ def _serialize_report(report) -> ReportResponse:
         period_start=report.period_start,
         period_end=report.period_end,
         file_url=report.file_url,
+        processing_time=report.processing_time,
         created_by=report.created_by,
         creator_name=report.creator.full_name if report.creator else None,
         created_at=report.created_at,
