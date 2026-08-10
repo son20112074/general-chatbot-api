@@ -178,7 +178,9 @@ class FileProcessingJob:
             logger.error(error_msg)
             
             # Mark file as processing failed
-            await self._update_file_processing(file.id, None, None, None, [], False, processing_duration)
+            await self._update_file_processing(
+                file.id, None, None, None, [], [], False, processing_duration
+            )
             
             return {
                 "success": False,
