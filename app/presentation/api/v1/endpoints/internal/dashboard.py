@@ -10,7 +10,12 @@ from app.domain.models.user import User
 from app.domain.models.role import Role
 from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.auth import TokenData
-from app.presentation.api.v1.schemas.dashboard import RoleStatisticItem, RoleStatisticsResponse
+from app.presentation.api.v1.schemas.dashboard import (
+    RoleStatisticItem,
+    RoleStatisticsResponse,
+    UserStatisticItem,
+    UserStatisticsResponse,
+)
 from sqlalchemy.sql import text
 from app.core.config import settings
 from app.domain.services.export_employee_performance_service import EmployeePerformanceExcelCreator
@@ -106,6 +111,30 @@ class DashboardService:
             for row in scope_result
         ]
 
+    @staticmethod
+    def _build_time_filter(
+        from_time: Optional[datetime],
+        to_time: Optional[datetime],
+        params: Dict[str, Any]
+    ):
+        """Return a callable that renders the time filter for a given column.
+
+        The filter is rendered as SQL fragments rather than
+        `(:from_time IS NULL OR ...)` because asyncpg cannot infer the type of a
+        bind parameter that only appears in an `IS NULL` comparison.
+        """
+        def time_filter(column: str) -> str:
+            clauses = []
+            if from_time is not None:
+                clauses.append(f" AND {column} >= :from_time")
+                params["from_time"] = from_time
+            if to_time is not None:
+                clauses.append(f" AND {column} <= :to_time")
+                params["to_time"] = to_time
+            return "".join(clauses)
+
+        return time_filter
+
     async def get_role_statistics(
         self,
         current_role_id: Optional[int],
@@ -119,18 +148,7 @@ class DashboardService:
 
         role_ids = [role["role_id"] for role in roles]
         params: Dict[str, Any] = {"role_ids": role_ids}
-
-        # Build the time filter as SQL fragments: asyncpg cannot infer the type of a
-        # bind parameter that only appears in an `IS NULL` comparison.
-        def time_filter(column: str) -> str:
-            clauses = []
-            if from_time is not None:
-                clauses.append(f" AND {column} >= :from_time")
-                params["from_time"] = from_time
-            if to_time is not None:
-                clauses.append(f" AND {column} <= :to_time")
-                params["to_time"] = to_time
-            return "".join(clauses)
+        time_filter = self._build_time_filter(from_time, to_time, params)
 
         # Files are attributed to the current role of their creator
         file_result = await self.session.execute(
@@ -181,6 +199,85 @@ class DashboardService:
                 "question_count": question_counts.get(role["role_id"], 0),
             }
             for role in roles
+        ]
+
+        return {
+            "total_files": sum(item["file_count"] for item in statistics),
+            "total_questions": sum(item["question_count"] for item in statistics),
+            "statistics": statistics,
+        }
+
+    async def get_user_statistics(
+        self,
+        current_role_id: Optional[int],
+        from_time: Optional[datetime] = None,
+        to_time: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """Count files and chat questions per user within the visible role scope."""
+        roles = await self.get_role_scope(current_role_id)
+        if not roles:
+            return {"total_files": 0, "total_questions": 0, "statistics": []}
+
+        role_names = {role["role_id"]: role["role_name"] for role in roles}
+        role_ids = list(role_names.keys())
+
+        user_rows = await self.session.execute(
+            select(User.id, User.account_name, User.full_name, User.role_id)
+            .where(and_(User.role_id.in_(role_ids), User.status == True))
+            .order_by(User.id.asc())
+        )
+        users = [
+            {
+                "user_id": row[0],
+                "account_name": row[1],
+                "full_name": row[2],
+                "role_id": row[3],
+                "role_name": role_names.get(row[3]),
+            }
+            for row in user_rows
+        ]
+        if not users:
+            return {"total_files": 0, "total_questions": 0, "statistics": []}
+
+        user_ids = [user["user_id"] for user in users]
+        params: Dict[str, Any] = {"user_ids": user_ids}
+        time_filter = self._build_time_filter(from_time, to_time, params)
+
+        file_result = await self.session.execute(
+            text(f"""
+                SELECT f.created_by, COUNT(f.id) AS file_count
+                FROM files f
+                WHERE COALESCE(f.is_deleted, false) = false
+                AND f.created_by = ANY(:user_ids)
+                {time_filter('f.created_at')}
+                GROUP BY f.created_by
+            """),
+            params
+        )
+        file_counts = {row[0]: row[1] for row in file_result}
+
+        question_result = await self.session.execute(
+            text(f"""
+                SELECT u.id, COUNT(cm.id) AS question_count
+                FROM chat_messages cm
+                JOIN sessions s ON s.session_id = cm.session_id
+                JOIN users u ON s.user_id = u.id::text
+                WHERE cm.type = 'user'
+                AND u.id = ANY(:user_ids)
+                {time_filter('cm.created_at')}
+                GROUP BY u.id
+            """),
+            params
+        )
+        question_counts = {row[0]: row[1] for row in question_result}
+
+        statistics = [
+            {
+                **user,
+                "file_count": file_counts.get(user["user_id"], 0),
+                "question_count": question_counts.get(user["user_id"], 0),
+            }
+            for user in users
         ]
 
         return {
@@ -722,6 +819,41 @@ async def get_role_statistics(
         raise HTTPException(
             status_code=500,
             detail=f"Error getting role statistics: {str(e)}"
+        )
+
+@router.get("/user-statistics", response_model=UserStatisticsResponse)
+async def get_user_statistics(
+    from_time: Optional[datetime] = Query(None, description="Thời gian bắt đầu (ISO format)"),
+    to_time: Optional[datetime] = Query(None, description="Thời gian kết thúc (ISO format)"),
+    current_user: TokenData = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Thống kê số lượng file và số câu hỏi trong lịch sử chat theo từng người dùng.
+
+    Phạm vi: người dùng thuộc vai trò của chính mình và toàn bộ vai trò cấp dưới.
+    Admin xem được tất cả người dùng.
+    """
+    try:
+        dashboard_service = DashboardService(session)
+        result = await dashboard_service.get_user_statistics(
+            current_role_id=current_user.role_id,
+            from_time=from_time,
+            to_time=to_time
+        )
+
+        return UserStatisticsResponse(
+            from_time=from_time,
+            to_time=to_time,
+            total_files=result["total_files"],
+            total_questions=result["total_questions"],
+            statistics=[UserStatisticItem(**item) for item in result["statistics"]]
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting user statistics: {str(e)}"
         )
 
 @router.get("/task-statistics")
