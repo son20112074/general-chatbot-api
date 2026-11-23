@@ -1,10 +1,11 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import Text, and_, any_, bindparam, func, or_, select, union
+from sqlalchemy import Text, any_, bindparam, func, or_, select, union
 from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -39,6 +40,9 @@ ADMIN_ROLE_ID = settings.ADMIN_ROLE_ID
 # Default and maximum limits for safety
 DEFAULT_LIMIT = 5000
 MAX_LIMIT = 20000
+# Edges returned with a structure payload. The node limit alone does not
+# bound a dense subgraph, and Sigma cannot lay out tens of thousands of edges.
+MAX_STRUCTURE_EDGES = 8000
 
 # asyncpg rejects queries with more than 32767 bind parameters.
 IN_QUERY_BATCH_SIZE = 10000
@@ -59,65 +63,37 @@ async def _get_user_accessible_node_ids(
     if is_admin:
         return None  # Admin sees all
 
-    # Non-admin: get files created by current user
-    user_files = (
+    file_names = list(
         (
             await db.execute(
-                select(File).where(File.created_by == current_user.user_id)
+                select(File.name).where(File.created_by == current_user.user_id)
             )
-        )
-        .scalars()
-        .all()
+        ).scalars().all()
     )
-
-    file_names = [f.name for f in user_files]
     if not file_names:
-        return set()  # No access
+        return set()
 
-    # Find Document nodes from user's files
-    document_nodes = (
-        (
-            await db.execute(
-                select(Node).where(
-                    and_(
-                        Node.entity_type == "Document",
-                        Node.name.in_(file_names),
-                    )
-                )
-            )
+    # IDs only. The previous query loaded every accessible Node, including
+    # attributes and summary, before structure or detail could start.
+    accessible_ids: set = set()
+    for start in range(0, len(file_names), IN_QUERY_BATCH_SIZE):
+        batch = file_names[start : start + IN_QUERY_BATCH_SIZE]
+        documents = (
+            select(Node.id.label("id"))
+            .where(Node.entity_type == "Document", Node.name.in_(batch))
+            .cte("documents")
         )
-        .scalars()
-        .all()
-    )
-
-    document_node_ids = {n.id for n in document_nodes}
-
-    # Find all connected nodes
-    connected_nodes = (
-        (
-            await db.execute(
-                select(Node).where(
-                    or_(
-                        Node.id.in_(
-                            select(Edge.target_node_id).where(
-                                Edge.source_node_id.in_(document_node_ids)
-                            )
-                        ),
-                        Node.id.in_(
-                            select(Edge.source_node_id).where(
-                                Edge.target_node_id.in_(document_node_ids)
-                            )
-                        ),
-                        Node.id.in_(document_node_ids),
-                    )
-                )
-            )
+        stmt = union(
+            select(documents.c.id),
+            select(Edge.target_node_id).where(
+                Edge.source_node_id.in_(select(documents.c.id))
+            ),
+            select(Edge.source_node_id).where(
+                Edge.target_node_id.in_(select(documents.c.id))
+            ),
         )
-        .scalars()
-        .all()
-    )
-
-    return {n.id for n in connected_nodes}
+        accessible_ids.update((await db.execute(stmt)).scalars().all())
+    return accessible_ids
 
 
 def _iter_id_batches(ids: set, batch_size: int = IN_QUERY_BATCH_SIZE):
@@ -482,6 +458,197 @@ async def get_graph_summary(
 # =============================================================================
 
 
+class _NodeLite(NamedTuple):
+    id: UUID
+    name: str
+    entity_type: str
+    created_at: Optional[datetime]
+
+
+class _EdgeLite(NamedTuple):
+    id: UUID
+    source_node_id: UUID
+    target_node_id: UUID
+    edge_type: str
+
+
+_STRUCTURE_NODE_COLUMNS = (
+    Node.id,
+    Node.name,
+    Node.entity_type,
+    Node.created_at,
+)
+
+
+def _uuid_in(column, ids, bind_name: str):
+    """IN for small id lists, one uuid[] bind once the list would blow the parameter cap."""
+    id_list = list(ids)
+    if len(id_list) <= 8000:
+        return column.in_(id_list)
+    return column == any_(
+        bindparam(bind_name, value=id_list, type_=ARRAY(PG_UUID(as_uuid=True)))
+    )
+
+
+async def _fetch_structure_nodes(
+    db: AsyncSession,
+    accessible_node_ids: Optional[set],
+    *,
+    entity_types: Optional[List[str]],
+    created_after: Optional[datetime],
+    created_before: Optional[datetime],
+    search: Optional[str],
+    limit: int,
+) -> List[_NodeLite]:
+    if accessible_node_ids is not None and not accessible_node_ids:
+        return []
+
+    if accessible_node_ids is None:
+        query = _apply_node_filters(
+            select(*_STRUCTURE_NODE_COLUMNS),
+            entity_types,
+            created_after,
+            created_before,
+            search,
+        ).limit(limit)
+        rows = (await db.execute(query)).all()
+        return [_NodeLite(*row) for row in rows]
+
+    found: List[_NodeLite] = []
+    remaining = limit
+    for batch in _iter_id_batches(accessible_node_ids):
+        query = _apply_node_filters(
+            select(*_STRUCTURE_NODE_COLUMNS).where(Node.id.in_(batch)),
+            entity_types,
+            created_after,
+            created_before,
+            search,
+        ).limit(remaining)
+        rows = (await db.execute(query)).all()
+        found.extend(_NodeLite(*row) for row in rows)
+        remaining = limit - len(found)
+        if remaining <= 0:
+            break
+    return found
+
+
+async def _fetch_structure_neighbors(
+    db: AsyncSession,
+    matched_ids: set,
+    accessible_node_ids: Optional[set],
+    entity_types: Optional[List[str]],
+    limit: int,
+) -> List[_NodeLite]:
+    if limit <= 0 or not matched_ids:
+        return []
+
+    matched_list = list(matched_ids)
+    neighbors = union(
+        select(Edge.target_node_id.label("nid")).where(
+            Edge.source_node_id.in_(matched_list)
+        ),
+        select(Edge.source_node_id.label("nid")).where(
+            Edge.target_node_id.in_(matched_list)
+        ),
+    ).subquery("neighbors")
+    query = (
+        select(*_STRUCTURE_NODE_COLUMNS)
+        .join(neighbors, Node.id == neighbors.c.nid)
+        .where(~Node.id.in_(matched_list))
+    )
+    if entity_types:
+        query = query.where(Node.entity_type.in_(entity_types))
+    if accessible_node_ids is not None:
+        query = query.where(_uuid_in(Node.id, accessible_node_ids, "neighbor_ids"))
+    rows = (await db.execute(query.limit(limit))).all()
+    return [_NodeLite(*row) for row in rows]
+
+
+async def _fetch_structure_edges(
+    db: AsyncSession,
+    visible_ids: List[UUID],
+    matched_ids: set,
+    edge_types: Optional[List[str]],
+    restrict_to_matched: bool,
+) -> List[_EdgeLite]:
+    if not visible_ids:
+        return []
+
+    query = select(
+        Edge.id,
+        Edge.source_node_id,
+        Edge.target_node_id,
+        Edge.edge_type,
+    ).where(
+        _uuid_in(Edge.source_node_id, visible_ids, "src_ids"),
+        _uuid_in(Edge.target_node_id, visible_ids, "tgt_ids"),
+    )
+    if restrict_to_matched:
+        query = query.where(
+            or_(
+                _uuid_in(Edge.source_node_id, matched_ids, "touch_src_ids"),
+                _uuid_in(Edge.target_node_id, matched_ids, "touch_tgt_ids"),
+            )
+        )
+    if edge_types:
+        query = query.where(Edge.edge_type.in_(edge_types))
+    rows = (await db.execute(query.limit(MAX_STRUCTURE_EDGES))).all()
+    return [_EdgeLite(*row) for row in rows]
+
+
+async def _load_graph_structure(
+    db: AsyncSession,
+    accessible_node_ids: Optional[set],
+    *,
+    entity_types: Optional[List[str]],
+    edge_types: Optional[List[str]],
+    created_after: Optional[datetime],
+    created_before: Optional[datetime],
+    search: Optional[str],
+    include_related: bool,
+    limit: int,
+):
+    """Return at most `limit` nodes and MAX_STRUCTURE_EDGES edges.
+
+    Columns are the ones the canvas renders. include_related only fills
+    leftover room under `limit`; it no longer expands the seed into the
+    whole neighborhood.
+    """
+    matched = await _fetch_structure_nodes(
+        db,
+        accessible_node_ids,
+        entity_types=entity_types,
+        created_after=created_after,
+        created_before=created_before,
+        search=search,
+        limit=limit,
+    )
+    if not matched:
+        return [], []
+
+    nodes = list(matched)
+    matched_ids = {node.id for node in matched}
+    if include_related and len(nodes) < limit:
+        nodes.extend(
+            await _fetch_structure_neighbors(
+                db,
+                matched_ids,
+                accessible_node_ids,
+                entity_types,
+                limit - len(nodes),
+            )
+        )
+
+    edges = await _fetch_structure_edges(
+        db,
+        [node.id for node in nodes],
+        matched_ids,
+        edge_types,
+        restrict_to_matched=include_related and len(nodes) > len(matched),
+    )
+    return nodes, edges
+
+
 @router.get(
     "/structure",
     response_model=GraphStructureResponse,
@@ -495,23 +662,23 @@ async def get_graph_structure(
     created_before: Optional[datetime] = Query(None, description="Filter nodes created before this date"),
     search: Optional[str] = Query(None, description="Search in node name/summary"),
     include_related: bool = Query(True, description="Include 1-hop neighbor nodes"),
-    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT, description="Max nodes to return"),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT, description="Max nodes to return, including 1-hop neighbors"),
     current_user: TokenData = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get lightweight graph structure for layout calculation."""
     accessible_node_ids = await _get_user_accessible_node_ids(db, current_user)
 
-    nodes, edges = await _get_filtered_nodes_and_edges(
+    nodes, edges = await _load_graph_structure(
         db,
         accessible_node_ids,
-        entity_types,
-        edge_types,
-        created_after,
-        created_before,
-        search,
-        include_related,
-        limit,
+        entity_types=entity_types,
+        edge_types=edge_types,
+        created_after=created_after,
+        created_before=created_before,
+        search=search,
+        include_related=include_related,
+        limit=limit,
     )
 
     return GraphStructureResponse(
