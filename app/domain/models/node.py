@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, DateTime, Index, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -10,6 +10,8 @@ class Node(Base):
     __tablename__ = "nodes"
     __table_args__ = (
         UniqueConstraint("name", "entity_type", name="uq_node_name_type"),
+        Index("ix_nodes_entity_type_created_at", "entity_type", "created_at"),
+        Index("ix_nodes_created_at", "created_at"),
         {"schema": settings.DB_SCHEMA},
     )
 

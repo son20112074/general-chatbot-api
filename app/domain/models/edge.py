@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, Text, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -10,6 +10,7 @@ class Edge(Base):
     __tablename__ = "edges"
     __table_args__ = (
         UniqueConstraint("source_node_id", "target_node_id", "edge_type", name="uq_edge_src_tgt_type"),
+        Index("ix_edges_edge_type", "edge_type"),
         {"schema": settings.DB_SCHEMA},
     )
 
