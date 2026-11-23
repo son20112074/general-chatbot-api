@@ -3,7 +3,8 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import Text, and_, any_, bindparam, func, or_, select, union
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -318,6 +319,140 @@ async def _get_filtered_nodes_and_edges(
 # =============================================================================
 
 
+def _empty_graph_summary() -> GraphSummaryResponse:
+    return GraphSummaryResponse(
+        success=True,
+        data=GraphSummary(
+            node_count=0,
+            edge_count=0,
+            entity_type_counts=[],
+            edge_type_counts=[],
+            date_range=DateRange(min_date=None, max_date=None),
+        ),
+    )
+
+
+def _graph_summary_from_groups(node_rows, edge_rows) -> GraphSummaryResponse:
+    """Build a summary from SQL aggregates. Totals are the sum of the groups."""
+    node_count = 0
+    min_date = None
+    max_date = None
+    entity_counts = []
+    for entity_type, count, row_min, row_max in node_rows:
+        count = int(count or 0)
+        node_count += count
+        entity_counts.append((entity_type, count))
+        if row_min is not None and (min_date is None or row_min < min_date):
+            min_date = row_min
+        if row_max is not None and (max_date is None or row_max > max_date):
+            max_date = row_max
+    entity_counts.sort(key=lambda item: item[1], reverse=True)
+
+    edge_count = 0
+    edge_counts = []
+    for edge_type, count in edge_rows:
+        count = int(count or 0)
+        edge_count += count
+        edge_counts.append((edge_type, count))
+    edge_counts.sort(key=lambda item: item[1], reverse=True)
+
+    return GraphSummaryResponse(
+        success=True,
+        data=GraphSummary(
+            node_count=node_count,
+            edge_count=edge_count,
+            entity_type_counts=[
+                TypeCount(type=type_name, count=count)
+                for type_name, count in entity_counts
+            ],
+            edge_type_counts=[
+                TypeCount(type=type_name, count=count)
+                for type_name, count in edge_counts
+            ],
+            date_range=DateRange(
+                min_date=min_date.isoformat() if min_date else None,
+                max_date=max_date.isoformat() if max_date else None,
+            ),
+        ),
+    )
+
+
+def _accessible_node_ids_for_files(file_names: list):
+    """Node ids owned by the user's documents, plus their 1-hop neighbors.
+
+    Stays a SQL selectable so summary can aggregate without loading rows.
+    """
+    file_name_ids = bindparam(
+        "file_names",
+        value=list(file_names),
+        type_=ARRAY(Text()),
+    )
+    documents = (
+        select(Node.id.label("id"))
+        .where(
+            Node.entity_type == "Document",
+            Node.name == any_(file_name_ids),
+        )
+        .cte("documents")
+    )
+    return union(
+        select(documents.c.id),
+        select(Edge.target_node_id).where(
+            Edge.source_node_id.in_(select(documents.c.id))
+        ),
+        select(Edge.source_node_id).where(
+            Edge.target_node_id.in_(select(documents.c.id))
+        ),
+    )
+
+
+async def _load_graph_summary(
+    db: AsyncSession, file_names: Optional[list] = None
+) -> GraphSummaryResponse:
+    """Aggregate in the database.
+
+    COUNT(*) (not COUNT(id)) lets Postgres satisfy the admin scan from
+    ix_nodes_entity_type_created_at and ix_edges_edge_type alone.
+    """
+    if file_names is None:
+        node_stmt = select(
+            Node.entity_type,
+            func.count(),
+            func.min(Node.created_at),
+            func.max(Node.created_at),
+        ).group_by(Node.entity_type)
+        edge_stmt = select(Edge.edge_type, func.count()).group_by(Edge.edge_type)
+    else:
+        node_accessible = _accessible_node_ids_for_files(file_names).subquery(
+            "accessible"
+        )
+        node_stmt = (
+            select(
+                Node.entity_type,
+                func.count(),
+                func.min(Node.created_at),
+                func.max(Node.created_at),
+            )
+            .where(Node.id.in_(select(node_accessible.c.id)))
+            .group_by(Node.entity_type)
+        )
+        edge_accessible = _accessible_node_ids_for_files(file_names).subquery(
+            "accessible"
+        )
+        edge_stmt = (
+            select(Edge.edge_type, func.count())
+            .where(
+                Edge.source_node_id.in_(select(edge_accessible.c.id)),
+                Edge.target_node_id.in_(select(edge_accessible.c.id)),
+            )
+            .group_by(Edge.edge_type)
+        )
+
+    node_rows = (await db.execute(node_stmt)).all()
+    edge_rows = (await db.execute(edge_stmt)).all()
+    return _graph_summary_from_groups(node_rows, edge_rows)
+
+
 @router.get(
     "/summary",
     response_model=GraphSummaryResponse,
@@ -329,129 +464,17 @@ async def get_graph_summary(
     db: AsyncSession = Depends(get_db),
 ):
     """Get summary statistics for the knowledge graph."""
-    accessible_node_ids = await _get_user_accessible_node_ids(db, current_user)
+    if current_user.role_id == ADMIN_ROLE_ID:
+        return await _load_graph_summary(db)
 
-    if accessible_node_ids is not None and not accessible_node_ids:
-        return GraphSummaryResponse(
-            success=True,
-            data=GraphSummary(
-                node_count=0,
-                edge_count=0,
-                entity_type_counts=[],
-                edge_type_counts=[],
-                date_range=DateRange(min_date=None, max_date=None),
-            ),
+    file_names = (
+        await db.execute(
+            select(File.name).where(File.created_by == current_user.user_id)
         )
-
-    if accessible_node_ids is None:
-        node_count = (
-            await db.execute(select(func.count(Node.id)))
-        ).scalar() or 0
-        edge_count = (
-            await db.execute(select(func.count(Edge.id)))
-        ).scalar() or 0
-        entity_type_results = (
-            await db.execute(
-                select(Node.entity_type, func.count(Node.id).label("count"))
-                .group_by(Node.entity_type)
-                .order_by(func.count(Node.id).desc())
-            )
-        ).all()
-        edge_type_results = (
-            await db.execute(
-                select(Edge.edge_type, func.count(Edge.id).label("count"))
-                .group_by(Edge.edge_type)
-                .order_by(func.count(Edge.id).desc())
-            )
-        ).all()
-        date_result = (
-            await db.execute(select(func.min(Node.created_at), func.max(Node.created_at)))
-        ).first()
-    else:
-        node_count = 0
-        edge_count = 0
-        entity_type_counts_map: dict = {}
-        edge_type_counts_map: dict = {}
-        min_date = max_date = None
-
-        for batch in _iter_id_batches(accessible_node_ids):
-            node_count += (
-                await db.execute(
-                    select(func.count(Node.id)).where(Node.id.in_(batch))
-                )
-            ).scalar() or 0
-
-            for entity_type, count in (
-                await db.execute(
-                    select(Node.entity_type, func.count(Node.id).label("count"))
-                    .where(Node.id.in_(batch))
-                    .group_by(Node.entity_type)
-                )
-            ).all():
-                entity_type_counts_map[entity_type] = (
-                    entity_type_counts_map.get(entity_type, 0) + count
-                )
-
-            batch_min, batch_max = (
-                await db.execute(
-                    select(func.min(Node.created_at), func.max(Node.created_at)).where(
-                        Node.id.in_(batch)
-                    )
-                )
-            ).first()
-            if batch_min is not None:
-                min_date = batch_min if min_date is None else min(min_date, batch_min)
-            if batch_max is not None:
-                max_date = batch_max if max_date is None else max(max_date, batch_max)
-
-        edges_by_id: dict = {}
-        for batch in _iter_id_batches(accessible_node_ids):
-            for endpoint in (Edge.source_node_id, Edge.target_node_id):
-                for edge in (
-                    await db.execute(select(Edge).where(endpoint.in_(batch)))
-                ).scalars().all():
-                    if (
-                        edge.source_node_id in accessible_node_ids
-                        and edge.target_node_id in accessible_node_ids
-                    ):
-                        edges_by_id[edge.id] = edge
-        edge_count = len(edges_by_id)
-        for edge in edges_by_id.values():
-            edge_type_counts_map[edge.edge_type] = (
-                edge_type_counts_map.get(edge.edge_type, 0) + 1
-            )
-
-        entity_type_results = sorted(
-            entity_type_counts_map.items(),
-            key=lambda item: item[1],
-            reverse=True,
-        )
-        edge_type_results = sorted(
-            edge_type_counts_map.items(),
-            key=lambda item: item[1],
-            reverse=True,
-        )
-        date_result = (min_date, max_date)
-
-    entity_type_counts = [
-        TypeCount(type=row[0], count=row[1]) for row in entity_type_results
-    ]
-    edge_type_counts = [
-        TypeCount(type=row[0], count=row[1]) for row in edge_type_results
-    ]
-    min_date = date_result[0].isoformat() if date_result and date_result[0] else None
-    max_date = date_result[1].isoformat() if date_result and date_result[1] else None
-
-    return GraphSummaryResponse(
-        success=True,
-        data=GraphSummary(
-            node_count=node_count,
-            edge_count=edge_count,
-            entity_type_counts=entity_type_counts,
-            edge_type_counts=edge_type_counts,
-            date_range=DateRange(min_date=min_date, max_date=max_date),
-        ),
-    )
+    ).scalars().all()
+    if not file_names:
+        return _empty_graph_summary()
+    return await _load_graph_summary(db, list(file_names))
 
 
 # =============================================================================
