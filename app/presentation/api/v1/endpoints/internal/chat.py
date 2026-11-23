@@ -1,10 +1,14 @@
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.core.database import get_db
-from app.presentation.api.v1.schemas.chat import FirstMessageResponse, LatestSessionResponse
+from app.presentation.api.v1.schemas.chat import (
+    FirstMessageListResponse,
+    FirstMessageResponse,
+    LatestSessionResponse,
+)
 from app.presentation.api.dependencies import get_current_user
 from app.presentation.api.v1.schemas.auth import TokenData
 from app.domain.models.chat_message import ChatMessage
@@ -17,10 +21,22 @@ from app.core.config import settings
 # admin: có thể xem tất cả
 # non-admin: lọc theo user_id trong Session, chỉ xem session của mình và user con
 
-@router.get("/first-messages", response_model=List[FirstMessageResponse])
+
+def _escape_like(value: str) -> str:
+    """Escape SQL LIKE wildcards so keyword search is literal."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _empty_first_messages() -> FirstMessageListResponse:
+    return FirstMessageListResponse(items=[], total=0)
+
+
+@router.get("/first-messages", response_model=FirstMessageListResponse)
 async def get_first_messages(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=200),
+    user_id: Optional[int] = Query(None, description="Filter sessions owned by this user"),
+    keyword: Optional[str] = Query(None, description="Search first-message content"),
     db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(get_current_user)
 ):
@@ -55,22 +71,48 @@ async def get_first_messages(
         .where(subq.c.rn == 1)
     )
 
-    # Phân quyền: nếu không phải admin thì chỉ lấy session có user_id thuộc user hiện tại + user con
+    # Phân quyền: non-admin chỉ xem session của mình và user role con.
+    # user_id ngoài tập đó trả rỗng. Admin không lọc user trừ khi chọn user_id.
+    filter_user_ids: Optional[List[str]] = None
     if current_user.role_id != settings.ADMIN_ROLE_ID:
         file_query_service = FileQueryService(db)
         user_ids = await file_query_service.get_user_hierarchy_ids(current_user.user_id)
         allowed_user_ids_str = [str(uid) for uid in user_ids]
+        if user_id is not None and str(user_id) not in allowed_user_ids_str:
+            return _empty_first_messages()
+        if user_id is not None:
+            filter_user_ids = [str(user_id)]
+        else:
+            filter_user_ids = allowed_user_ids_str
+        if not filter_user_ids:
+            return _empty_first_messages()
+    elif user_id is not None:
+        filter_user_ids = [str(user_id)]
+
+    if filter_user_ids is not None:
         stmt = stmt.join(Session, subq.c.session_id == Session.session_id)
-        stmt = stmt.where(Session.user_id.in_(allowed_user_ids_str))
+        stmt = stmt.where(Session.user_id.in_(filter_user_ids))
 
-    stmt = stmt.order_by(subq.c.created_at.desc())
+    search = (keyword or "").strip()
+    if search:
+        matched_sessions = (
+            select(ChatMessage.session_id)
+            .where(
+                ChatMessage.chat_type == "file",
+                ChatMessage.data.ilike(f"%{_escape_like(search)}%", escape="\\"),
+            )
+            .distinct()
+        )
+        stmt = stmt.where(subq.c.session_id.in_(matched_sessions))
 
-    # Apply pagination
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = (await db.execute(count_stmt)).scalar_one()
+
     offset = (page - 1) * page_size
-    stmt = stmt.offset(offset).limit(page_size)
+    stmt = stmt.order_by(subq.c.created_at.desc()).offset(offset).limit(page_size)
     result = await db.execute(stmt)
     rows = result.mappings().all()
-    return [
+    items = [
         FirstMessageResponse(
             session_id=row["session_id"],
             id=row["id"],
@@ -81,6 +123,7 @@ async def get_first_messages(
         )
         for row in rows
     ]
+    return FirstMessageListResponse(items=items, total=total)
 
 
 @router.get("/latest-session", response_model=LatestSessionResponse)

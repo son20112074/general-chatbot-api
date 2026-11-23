@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel
 
 
@@ -10,6 +10,11 @@ class FirstMessageResponse(BaseModel):
     type: str
     source_path: Optional[str] = None
     created_at: datetime
+
+
+class FirstMessageListResponse(BaseModel):
+    items: List[FirstMessageResponse]
+    total: int
 
 
 class LatestSessionResponse(BaseModel):
